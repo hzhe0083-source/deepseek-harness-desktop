@@ -1,19 +1,19 @@
-<p align="right"><strong>中文</strong> · <a href="./README.en.md">English</a></p>
+<p align="right"><strong>English</strong> · <a href="./README.zh-CN.md">中文</a></p>
 
 # DeepSeek Harness Desktop
 
-## 下载与安装
+## Download and install
 
-需要 Node.js 18+。在终端运行：
+Requires Node.js 18+. In a terminal, run:
 
 ```sh
 npx deepseek-harness-desktop
 ```
 
-会下载并启动最新桌面版，同时写入系统应用图标，之后可以从应用列表打开：
+This downloads and starts the latest desktop app, and also registers a system app icon so you can open it from the application menu later:
 
-- macOS：挂载 dmg 并启动（加 `--install` 装进「应用程序」）
-- Linux：下载 AppImage、写入 Ubuntu 应用菜单图标并启动；没有 libfuse2 时自动解包
-- Windows：运行 portable 版（免安装）
+- macOS: mounts the dmg and launches it (add `--install` to copy it into Applications)
+- Linux: downloads the AppImage, writes an Ubuntu application-menu icon, and launches it; extracts automatically if libfuse2 is missing
+- Windows: runs the portable build (no installer)
 
-npm 包只有几 KB，真正的安装包从 GitHub Releases 下载并缓存到本地。再次执行同一命令即可检查更新。
+The npm package is only a few KB. The real app is downloaded from GitHub Releases and cached locally. Run the same command again to check for updates.
