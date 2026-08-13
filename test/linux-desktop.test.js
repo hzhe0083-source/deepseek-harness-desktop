@@ -52,7 +52,8 @@ test('install.sh writes a Ubuntu application launcher with an icon path', () => 
     assert.match(body, /^Type=Application$/m)
     assert.match(body, /^Categories=Development;$/m)
     assert.match(body, /^StartupWMClass=deepseek-harness-desktop$/m)
-    assert.match(body, new RegExp(`^Exec=${appimage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} %U$`, 'm'))
+    assert.match(body, new RegExp(`^Exec=${appimage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
+    assert.match(body, /^StartupNotify=false$/m)
     assert.match(body, new RegExp(`^Icon=${icon.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
     assert.match(body, new RegExp(`^TryExec=${appimage.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'))
   } finally {

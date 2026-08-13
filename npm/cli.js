@@ -267,7 +267,8 @@ if [ -z "\${APPIMAGE_EXTRACT_AND_RUN:-}" ] &&
   APPIMAGE_EXTRACT_AND_RUN=1
   export APPIMAGE_EXTRACT_AND_RUN
 fi
-exec "$appimage" "$@" >>"$log" 2>&1
+echo "\$(date -Iseconds) exec appimage \$appimage" >>"\$log"
+exec "$appimage" >>"$log" 2>&1
 `, { mode: 0o755 })
 
   if (!isPng(icon)) {
@@ -291,14 +292,14 @@ exec "$appimage" "$@" >>"$log" 2>&1
   writeFileSync(desktop, `[Desktop Entry]
 Name=DeepSeek Harness Desktop
 Comment=Desktop shell for the local DeepSeek Harness
-Exec=${execKey} %U
+Exec=${execKey}
 TryExec=${launcher}
 Icon=${iconKey}
 Terminal=false
 Type=Application
 Categories=Development;
 StartupWMClass=deepseek-harness-desktop
-StartupNotify=true
+StartupNotify=false
 Keywords=DeepSeek;DSH;Harness;
 `)
   spawnSync('update-desktop-database', [join(dataHome, 'applications')], { stdio: 'ignore' })

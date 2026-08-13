@@ -45,14 +45,14 @@ write_desktop_entry() {
 [Desktop Entry]
 Name=DeepSeek Harness Desktop
 Comment=Desktop shell for the local DeepSeek Harness
-Exec=$exec_key %U
+Exec=$exec_key
 TryExec=$appimage
 Icon=$icon_key
 Terminal=false
 Type=Application
 Categories=Development;
 StartupWMClass=deepseek-harness-desktop
-StartupNotify=true
+StartupNotify=false
 Keywords=DeepSeek;DSH;Harness;
 EOF
   chmod 0644 "$desktop"
@@ -148,11 +148,14 @@ appimage=$(shell_single_quote "$appimage")
 extracted=$(shell_single_quote "$extracted")
 log=$(shell_single_quote "$log")
 mkdir -p "\$(dirname "\$log")"
+# GNOME may pass an empty %U; this app does not open files.
+set --
 if [ -x "\$extracted" ]; then
+  echo "\$(date -Iseconds) exec extracted \$extracted" >>"\$log"
   APPIMAGE=\${APPIMAGE:-\$appimage}
   APPDIR=\${APPDIR:-\$(dirname "\$extracted")}
   export APPIMAGE APPDIR
-  exec "\$extracted" --no-sandbox "\$@" >>"\$log" 2>&1
+  exec "\$extracted" --no-sandbox >>"\$log" 2>&1
 fi
 if [ -z "\${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
   if [ ! -e /lib/x86_64-linux-gnu/libfuse.so.2 ] &&
@@ -163,7 +166,8 @@ if [ -z "\${APPIMAGE_EXTRACT_AND_RUN:-}" ]; then
     export APPIMAGE_EXTRACT_AND_RUN
   fi
 fi
-exec "\$appimage" "\$@" >>"\$log" 2>&1
+echo "\$(date -Iseconds) exec appimage \$appimage" >>"\$log"
+exec "\$appimage" >>"\$log" 2>&1
 EOF
   chmod 0755 "$launcher"
 }
@@ -339,7 +343,12 @@ chmod 0755 "$TARGET"
 EXTRACTED_APP=""
 EXTRACT_DIR="$APP_DIR/squashfs-root"
 if extract_appimage_if_needed "$TARGET" "$EXTRACT_DIR"; then
-  if [ -x "$EXTRACT_DIR/AppRun" ]; then
+  # Prefer the Electron binary. AppRun uses an EXIT trap that GNOME
+  # startup-notification can interrupt before the window appears.
+  if [ -x "$EXTRACT_DIR/deepseek-harness-desktop" ]; then
+    EXTRACTED_APP="$EXTRACT_DIR/deepseek-harness-desktop"
+    printf 'Extracted AppImage for systems without libfuse2.\n'
+  elif [ -x "$EXTRACT_DIR/AppRun" ]; then
     EXTRACTED_APP="$EXTRACT_DIR/AppRun"
     printf 'Extracted AppImage for systems without libfuse2.\n'
   fi

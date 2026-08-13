@@ -436,7 +436,14 @@ function createMainWindow () {
     }
   })
 
-  mainWindow.once('ready-to-show', () => mainWindow.show())
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show()
+    mainWindow.focus()
+    if (process.platform === 'linux') {
+      mainWindow.setAlwaysOnTop(true)
+      mainWindow.setAlwaysOnTop(false)
+    }
+  })
 
   // Open external links in the system browser, never in new app windows.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -628,6 +635,10 @@ if (!gotLock) {
       if (mainWindow.isMinimized()) mainWindow.restore()
       mainWindow.show()
       mainWindow.focus()
+      if (process.platform === 'linux') {
+        mainWindow.setAlwaysOnTop(true)
+        mainWindow.setAlwaysOnTop(false)
+      }
     }
   })
 
