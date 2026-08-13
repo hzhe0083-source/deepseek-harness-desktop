@@ -1,0 +1,50 @@
+# 发布轻量启动器到 npm：桌面壳的引流入口。
+# 触发条件：GitHub Release 正式发布（published）。
+# 发布内容只是 npm/cli.js（几 KB），真正的安装包仍由用户从 Release 下载。
+name: Publish npm launcher
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Sync launcher version with release tag
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::Unexpected release tag ${RELEASE_VERSION}; expected vX.Y.Z"
+            exit 1
+          fi
+          VERSION="$version" node -e "const fs=require('fs');const f='npm/package.json';const p=JSON.parse(fs.readFileSync(f,'utf8'));p.version=process.env.VERSION;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+          echo "Launcher will be published as deepseek-harness-desktop@${version}"
+
+      - name: Publish to npm
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm
+          if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
+            echo "Publishing prerelease under the next dist-tag"
+            npm publish --access public --tag next
+          else
+            npm publish --access public
+          fi

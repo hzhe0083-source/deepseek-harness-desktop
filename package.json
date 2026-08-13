@@ -17,7 +17,8 @@
     "dist:linux": "npm run bundle:dsh && electron-builder --linux deb AppImage --x64 --publish never",
     "dist:mac": "npm run bundle:dsh && electron-builder --mac dmg zip dir --arm64 --publish never",
     "dist:mac:release": "npm run bundle:dsh && electron-builder --mac dmg zip --arm64 --publish never",
-    "dist:mac:dir": "npm run bundle:dsh && electron-builder --mac dir --arm64 --publish never"
+    "dist:mac:dir": "npm run bundle:dsh && electron-builder --mac dir --arm64 --publish never",
+    "publish:npm": "cd npm && npm publish --access public"
   },
   "dependencies": {
     "electron-updater": "6.8.9"
