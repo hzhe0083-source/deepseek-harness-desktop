@@ -26,6 +26,16 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 
 **当前必须等 0.5.0 Release 中出现这个 DMG 资产，才有正式的 0.5.0 macOS 下载包。** 如果 Release 页面还没有它，可以按下方“源码开发与构建”自行构建；Intel Mac 暂无正式安装包。
 
+### npm / npx：一条命令启动（可选）
+
+机器上有 Node.js 18+ 的话，也可以不手动下载安装包：
+
+```sh
+npx deepseek-harness-desktop
+```
+
+自动下载并启动最新版（macOS 加 `--install` 安装到「应用程序」；Linux 加 `--deb` 改用 deb）。npm 包本身只有几 KB，真正的安装包仍从 GitHub Releases 下载并缓存到本地。
+
 ### 不能用 pip 安装 Desktop
 
 DeepSeek Harness Desktop 是 Electron 应用，**不提供 pip 包**。`pip install deepseek-harness-sdk` 安装的是供 Python 程序调用的 SDK，不是 Desktop，也不会安装桌面界面。

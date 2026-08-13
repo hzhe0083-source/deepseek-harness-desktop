@@ -15,7 +15,8 @@
     "dist:dir": "electron-builder --dir --publish never",
     "dist:linux": "electron-builder --linux deb AppImage --publish never",
     "dist:mac": "electron-builder --mac dmg dir --arm64 --publish never",
-    "dist:mac:dir": "electron-builder --mac dir --arm64 --publish never"
+    "dist:mac:dir": "electron-builder --mac dir --arm64 --publish never",
+    "publish:npm": "cd npm && npm publish --access public"
   },
   "devDependencies": {
     "@electron/rebuild": "4.2.0",
