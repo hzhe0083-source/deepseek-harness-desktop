@@ -1,19 +1,26 @@
 {
   "name": "deepseek-harness-desktop",
   "productName": "DeepSeek Harness Desktop",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Electron desktop shell for the local DeepSeek Harness (DSH): Linux and macOS images that bundle the full DSH runtime, wrap its browser UI in a native window, and self-update from GitHub Releases.",
   "main": "main/main.js",
   "author": "hzhe0083-source <hzhe0083@gmail.com>",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
     "bundle:dsh": "node scripts/bundle-dsh.mjs",
+    "resolve:dsh": "node scripts/bundle-dsh.mjs --print-version",
+    "verify:dsh": "node scripts/bundle-dsh.mjs --verify-only",
     "dist": "npm run bundle:dsh && electron-builder --publish never",
     "dist:dir": "npm run bundle:dsh && electron-builder --dir --publish never",
-    "dist:linux": "npm run bundle:dsh && electron-builder --linux deb AppImage --publish never",
-    "dist:mac": "npm run bundle:dsh && electron-builder --mac dmg dir --arm64 --publish never",
+    "dist:linux": "npm run bundle:dsh && electron-builder --linux deb AppImage --x64 --publish never",
+    "dist:mac": "npm run bundle:dsh && electron-builder --mac dmg zip dir --arm64 --publish never",
+    "dist:mac:release": "npm run bundle:dsh && electron-builder --mac dmg zip --arm64 --publish never",
     "dist:mac:dir": "npm run bundle:dsh && electron-builder --mac dir --arm64 --publish never"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "electron": "41.10.5",
@@ -22,6 +29,14 @@
   "build": {
     "appId": "com.hzhe0083.deepseek-harness-desktop",
     "productName": "DeepSeek Harness Desktop",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "hzhe0083-source",
+        "repo": "deepseek-harness-desktop",
+        "releaseType": "release"
+      }
+    ],
     "directories": {
       "output": "dist",
       "buildResources": "assets"
@@ -41,14 +56,6 @@
         ]
       }
     ],
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "hzhe0083-source",
-        "repo": "deepseek-harness-desktop",
-        "releaseType": "release"
-      }
-    ],
     "linux": {
       "target": [
         "deb",
@@ -57,7 +64,8 @@
       "icon": "assets/icon.png",
       "category": "Development",
       "maintainer": "hzhe0083-source <hzhe0083@gmail.com>",
-      "synopsis": "Desktop shell for the local DeepSeek Harness"
+      "synopsis": "Desktop shell for the local DeepSeek Harness",
+      "artifactName": "${name}-${version}-linux-${arch}.${ext}"
     },
     "win": {
       "target": [
@@ -66,9 +74,16 @@
       "icon": "assets/icon.png"
     },
     "mac": {
+      "executableName": "Deepseek desktop",
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "arm64"
           ]
@@ -84,18 +99,18 @@
       "category": "public.app-category.developer-tools",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "extendInfo": {
+        "CFBundleDisplayName": "Deepseek desktop"
+      },
+      "artifactName": "${name}-${version}-mac-${arch}.${ext}"
     },
     "dmg": {
       "title": "DeepSeek Harness Desktop ${version}",
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "artifactName": "${name}-${version}-mac-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     }
-  },
-  "dependencies": {
-    "electron-updater": "^6.8.9"
   }
 }

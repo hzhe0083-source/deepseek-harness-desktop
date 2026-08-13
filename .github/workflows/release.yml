@@ -1,0 +1,1102 @@
+name: Release desktop when DSH updates
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even when the official DSH version is unchanged
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deepseek-harness-desktop-release
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  prepare:
+    name: Resolve the official DSH release once
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      should_release: ${{ steps.snapshot.outputs.should_release }}
+      dsh_version: ${{ steps.snapshot.outputs.dsh_version }}
+      desktop_version: ${{ steps.snapshot.outputs.desktop_version }}
+      release_tag: ${{ steps.snapshot.outputs.release_tag }}
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Create and compare the immutable runtime snapshot
+        id: snapshot
+        shell: bash
+        env:
+          FORCE_RELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo '::error::GITHUB_REPOSITORY has an unexpected format'
+            exit 1
+          fi
+          if [[ ! "$GITHUB_RUN_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo '::error::GITHUB_RUN_NUMBER is not numeric'
+            exit 1
+          fi
+
+          snapshot_dir="$RUNNER_TEMP/dsh-runtime-snapshot"
+          release_manifest_dir="$RUNNER_TEMP/dsh-release-manifest"
+          mkdir -p "$release_manifest_dir"
+
+          # This is the only lookup of the npm `latest` tag in the workflow.
+          # Both native builders consume the exact lockfile produced here.
+          node scripts/bundle-dsh.mjs --prepare-snapshot "$snapshot_dir"
+
+          SNAPSHOT_FILE="$snapshot_dir/snapshot.json" node <<'NODE'
+          const fs = require('node:fs')
+          const snapshot = JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE, 'utf8'))
+          const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+          if (snapshot.package !== '@deepseek-ai/dsh' || !semver.test(snapshot.version)) {
+            throw new Error('snapshot.json does not contain a valid official DSH version')
+          }
+          NODE
+
+          dsh_version="$(SNAPSHOT_FILE="$snapshot_dir/snapshot.json" node -e "const fs=require('node:fs');process.stdout.write(JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE,'utf8')).version)")"
+          desktop_version="0.5.${GITHUB_RUN_NUMBER}"
+          release_tag="v${desktop_version}"
+
+          releases_file="$RUNNER_TEMP/releases.json"
+          gh api --paginate --slurp \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases_file"
+
+          asset_id_file="$RUNNER_TEMP/dsh-runtime-asset-id"
+          RELEASES_FILE="$releases_file" node <<'NODE' > "$asset_id_file"
+          const fs = require('node:fs')
+          const pages = JSON.parse(fs.readFileSync(process.env.RELEASES_FILE, 'utf8'))
+          if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+            throw new Error('GitHub releases pagination did not return arrays of releases')
+          }
+          const releases = pages.flat()
+          const latestWithManifest = releases.find((release) =>
+            !release.draft &&
+            !release.prerelease &&
+            Array.isArray(release.assets) &&
+            release.assets.some((item) => item.name === 'dsh-runtime.json')
+          )
+          const asset = latestWithManifest
+            ? latestWithManifest.assets.find((item) => item.name === 'dsh-runtime.json')
+            : null
+          if (asset) {
+            if (!Number.isSafeInteger(asset.id) || asset.id <= 0) {
+              throw new Error('dsh-runtime.json has an invalid GitHub asset id')
+            }
+            process.stdout.write(String(asset.id))
+          }
+          NODE
+
+          asset_id="$(<"$asset_id_file")"
+          previous_version=''
+          previous_integrity=''
+          previous_desktop_version=''
+          if [[ -n "$asset_id" ]]; then
+            if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
+              echo '::error::Release asset id is not numeric'
+              exit 1
+            fi
+            previous_manifest="$RUNNER_TEMP/previous-dsh-runtime.json"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$previous_manifest"
+
+            previous_identity_file="$RUNNER_TEMP/previous-dsh-identity"
+            PREVIOUS_MANIFEST="$previous_manifest" node <<'NODE' > "$previous_identity_file"
+            const fs = require('node:fs')
+            const manifest = JSON.parse(fs.readFileSync(process.env.PREVIOUS_MANIFEST, 'utf8'))
+            const version = manifest.version || manifest.dshVersion
+            const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+            if (manifest.package && manifest.package !== '@deepseek-ai/dsh') {
+              throw new Error('latest dsh-runtime.json identifies a different package')
+            }
+            if (!semver.test(version || '')) {
+              throw new Error('latest dsh-runtime.json has an invalid DSH version')
+            }
+            if (manifest.integrity && !/^sha512-[A-Za-z0-9+/=]+$/.test(manifest.integrity)) {
+              throw new Error('latest dsh-runtime.json has an invalid integrity value')
+            }
+            if (!/^\d+\.\d+\.\d+$/.test(manifest.desktopVersion || '')) {
+              throw new Error('latest dsh-runtime.json has an invalid or missing desktopVersion')
+            }
+            process.stdout.write(`${version}\n${manifest.integrity || ''}\n${manifest.desktopVersion}\n`)
+            NODE
+            previous_version="$(sed -n '1p' "$previous_identity_file")"
+            previous_integrity="$(sed -n '2p' "$previous_identity_file")"
+            previous_desktop_version="$(sed -n '3p' "$previous_identity_file")"
+          fi
+
+          dsh_integrity="$(SNAPSHOT_FILE="$snapshot_dir/snapshot.json" node -e "const fs=require('node:fs');process.stdout.write(JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE,'utf8')).integrity)")"
+
+          should_release=false
+          if [[ "$FORCE_RELEASE" == 'true' || "$previous_version" != "$dsh_version" || "$previous_integrity" != "$dsh_integrity" ]]; then
+            should_release=true
+          fi
+
+          if [[ "$should_release" == 'true' && -n "$previous_desktop_version" ]]; then
+            CANDIDATE_VERSION="$desktop_version" PREVIOUS_VERSION="$previous_desktop_version" node <<'NODE'
+            const parse = (value) => {
+              if (!/^\d+\.\d+\.\d+$/.test(value)) throw new Error(`invalid desktop version: ${value}`)
+              return value.split('.').map((part) => BigInt(part))
+            }
+            const candidate = parse(process.env.CANDIDATE_VERSION)
+            const previous = parse(process.env.PREVIOUS_VERSION)
+            const comparison = candidate.findIndex((part, index) => part !== previous[index])
+            const isNewer = comparison >= 0 && candidate[comparison] > previous[comparison]
+            if (!isNewer) {
+              throw new Error(`candidate desktop ${process.env.CANDIDATE_VERSION} must be newer than published ${process.env.PREVIOUS_VERSION}`)
+            }
+            NODE
+          fi
+
+          SNAPSHOT_FILE="$snapshot_dir/snapshot.json" \
+          OUTPUT_MANIFEST="$release_manifest_dir/dsh-runtime.json" \
+          DESKTOP_VERSION="$desktop_version" \
+          WORKFLOW_RUN_ID="$GITHUB_RUN_ID" \
+          WORKFLOW_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
+          REPOSITORY="$GITHUB_REPOSITORY" \
+          node <<'NODE'
+          const fs = require('node:fs')
+          const snapshot = JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE, 'utf8'))
+          const manifest = {
+            schemaVersion: 1,
+            package: snapshot.package,
+            requested: snapshot.requested,
+            version: snapshot.version,
+            dshVersion: snapshot.version,
+            integrity: snapshot.integrity,
+            lockSha256: snapshot.lockSha256,
+            resolvedAt: snapshot.resolvedAt,
+            desktopVersion: process.env.DESKTOP_VERSION,
+            channel: 'stable',
+            source: 'official-npm-latest',
+            build: {
+              repository: process.env.REPOSITORY,
+              workflowRunId: process.env.WORKFLOW_RUN_ID,
+              workflowRunNumber: process.env.WORKFLOW_RUN_NUMBER
+            }
+          }
+          fs.writeFileSync(process.env.OUTPUT_MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`)
+          NODE
+
+          printf 'should_release=%s\n' "$should_release" >> "$GITHUB_OUTPUT"
+          printf 'dsh_version=%s\n' "$dsh_version" >> "$GITHUB_OUTPUT"
+          printf 'desktop_version=%s\n' "$desktop_version" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "$release_tag" >> "$GITHUB_OUTPUT"
+
+          if [[ "$should_release" == 'true' ]]; then
+            echo "Will release desktop ${desktop_version} with official DSH ${dsh_version}."
+          else
+            echo "Official DSH ${dsh_version} is already published; skipping this run."
+          fi
+
+      - name: Upload the shared DSH snapshot
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dsh-runtime-snapshot
+          path: |
+            ${{ runner.temp }}/dsh-runtime-snapshot/package.json
+            ${{ runner.temp }}/dsh-runtime-snapshot/package-lock.json
+            ${{ runner.temp }}/dsh-runtime-snapshot/snapshot.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the release runtime manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dsh-release-manifest
+          path: ${{ runner.temp }}/dsh-release-manifest/dsh-runtime.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release_guard:
+    name: Verify protected release controls
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production-release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require the protected default branch and exact environment policy
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+          RELEASE_ENVIRONMENT: production-release
+        run: |
+          set -Eeuo pipefail
+
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo '::error::RELEASE_ADMIN_TOKEN with Administration read must be stored in production-release'
+            exit 1
+          fi
+          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo '::error::GITHUB_REPOSITORY has an unexpected format'
+            exit 1
+          fi
+
+          repo_json="$RUNNER_TEMP/repository.json"
+          gh api \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}" > "$repo_json"
+
+          default_branch_file="$RUNNER_TEMP/default-branch"
+          REPO_JSON="$repo_json" node <<'NODE' > "$default_branch_file"
+          const fs = require('node:fs')
+          const repository = JSON.parse(fs.readFileSync(process.env.REPO_JSON, 'utf8'))
+          if (typeof repository.default_branch !== 'string' || !repository.default_branch || /[\u0000-\u001f\u007f]/.test(repository.default_branch)) {
+            throw new Error('repository default_branch is invalid')
+          }
+          process.stdout.write(repository.default_branch)
+          NODE
+          default_branch="$(<"$default_branch_file")"
+          if [[ "$GITHUB_REF" != "refs/heads/${default_branch}" ]]; then
+            echo "::error::Releases may run only from the default branch (${default_branch})"
+            exit 1
+          fi
+
+          encoded_default_file="$RUNNER_TEMP/encoded-default-branch"
+          DEFAULT_BRANCH="$default_branch" node -e "process.stdout.write(encodeURIComponent(process.env.DEFAULT_BRANCH))" > "$encoded_default_file"
+          encoded_default="$(<"$encoded_default_file")"
+          branch_json="$RUNNER_TEMP/default-branch.json"
+          gh api \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/branches/${encoded_default}" > "$branch_json"
+          BRANCH_JSON="$branch_json" EXPECTED_SHA="$GITHUB_SHA" node <<'NODE'
+          const fs = require('node:fs')
+          const branch = JSON.parse(fs.readFileSync(process.env.BRANCH_JSON, 'utf8'))
+          if (branch.protected !== true) {
+            throw new Error('the repository default branch must be protected by branch protection or a ruleset')
+          }
+          if (!branch.commit || branch.commit.sha !== process.env.EXPECTED_SHA) {
+            throw new Error('release source is not the current default-branch head')
+          }
+          NODE
+
+          rules_json="$RUNNER_TEMP/default-branch-rules.json"
+          gh api --paginate --slurp \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/rules/branches/${encoded_default}?per_page=100" > "$rules_json"
+          if ACTIVE_RULES_JSON="$rules_json" node <<'NODE'
+          const fs = require('node:fs')
+          const pages = JSON.parse(fs.readFileSync(process.env.ACTIVE_RULES_JSON, 'utf8'))
+          if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+            throw new Error('active ruleset pagination did not return arrays of rules')
+          }
+          process.exitCode = pages.flat().length > 0 ? 0 : 10
+          NODE
+          then
+            rules_status=0
+          else
+            rules_status=$?
+          fi
+          if [[ "$rules_status" -eq 10 ]]; then
+            # No active ruleset applies. Require a real classic branch
+            # protection object instead; a 404/403 is a hard failure.
+            gh api \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/branches/${encoded_default}/protection" > /dev/null
+          elif [[ "$rules_status" -ne 0 ]]; then
+            exit "$rules_status"
+          fi
+
+          environment_json="$RUNNER_TEMP/release-environment.json"
+          gh api \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/environments/${RELEASE_ENVIRONMENT}" > "$environment_json"
+          ENVIRONMENT_JSON="$environment_json" node <<'NODE'
+          const fs = require('node:fs')
+          const environment = JSON.parse(fs.readFileSync(process.env.ENVIRONMENT_JSON, 'utf8'))
+          const policy = environment.deployment_branch_policy
+          if (!policy || policy.protected_branches || !policy.custom_branch_policies) {
+            throw new Error('production-release must use a custom deployment branch policy')
+          }
+          NODE
+
+          policies_json="$RUNNER_TEMP/release-branch-policies.json"
+          gh api --paginate --slurp \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/environments/${RELEASE_ENVIRONMENT}/deployment-branch-policies?per_page=100" > "$policies_json"
+          POLICIES_JSON="$policies_json" DEFAULT_BRANCH="$default_branch" node <<'NODE'
+          const fs = require('node:fs')
+          const pages = JSON.parse(fs.readFileSync(process.env.POLICIES_JSON, 'utf8'))
+          if (!Array.isArray(pages) || pages.length === 0) {
+            throw new Error('deployment branch policy pagination did not return a JSON page array')
+          }
+          const policies = []
+          let advertisedTotal = null
+          for (const page of pages) {
+            if (!page || !Number.isSafeInteger(page.total_count) || !Array.isArray(page.branch_policies)) {
+              throw new Error('deployment branch policy page has an invalid schema')
+            }
+            if (advertisedTotal === null) advertisedTotal = page.total_count
+            if (page.total_count !== advertisedTotal) throw new Error('deployment branch policy page totals disagree')
+            policies.push(...page.branch_policies)
+          }
+          if (advertisedTotal !== policies.length) {
+            throw new Error(`deployment branch policy pagination is incomplete: expected ${advertisedTotal}, received ${policies.length}`)
+          }
+          if (policies.length !== 1) {
+            throw new Error(`production-release must contain exactly one deployment branch policy; found ${policies.length}`)
+          }
+          const policy = policies[0]
+          if (!policy || policy.name !== process.env.DEFAULT_BRANCH || (policy.type !== undefined && policy.type !== 'branch')) {
+            throw new Error('the sole production-release policy must be the repository default branch')
+          }
+          NODE
+
+          immutable_json="$RUNNER_TEMP/immutable-releases.json"
+          gh api \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/immutable-releases" > "$immutable_json"
+          IMMUTABLE_JSON="$immutable_json" node <<'NODE'
+          const fs = require('node:fs')
+          const state = JSON.parse(fs.readFileSync(process.env.IMMUTABLE_JSON, 'utf8'))
+          if (state.enabled !== true) throw new Error('GitHub Immutable Releases must be enabled before automatic updates are published')
+          NODE
+
+  build_linux:
+    name: Build Linux x64 release
+    needs:
+      - prepare
+      - release_guard
+    if: needs.prepare.outputs.should_release == 'true' && needs.release_guard.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      DESKTOP_VERSION: ${{ needs.prepare.outputs.desktop_version }}
+      DSH_VERSION: ${{ needs.prepare.outputs.dsh_version }}
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify the native builder architecture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(uname -m)" != 'x86_64' ]]; then
+            echo '::error::Linux release must be built natively on x86_64'
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install desktop dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Apply the run-derived desktop version
+        run: npm version --no-git-tag-version --allow-same-version "$DESKTOP_VERSION"
+
+      - name: Download the shared DSH snapshot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dsh-runtime-snapshot
+          path: ${{ runner.temp }}/dsh-runtime-snapshot
+
+      - name: Test and assemble the Linux-native DSH runtime
+        env:
+          DSH_SNAPSHOT_DIR: ${{ runner.temp }}/dsh-runtime-snapshot
+        run: |
+          set -Eeuo pipefail
+          npm test
+          npm run bundle:dsh
+          npm run verify:dsh
+
+      - name: Verify the bundled runtime identity
+        shell: bash
+        env:
+          DSH_SNAPSHOT_DIR: ${{ runner.temp }}/dsh-runtime-snapshot
+          EXPECTED_PLATFORM: linux
+          EXPECTED_ARCHITECTURE: x64
+        run: |
+          set -Eeuo pipefail
+          SNAPSHOT_FILE="$DSH_SNAPSHOT_DIR/snapshot.json" \
+          RUNTIME_MANIFEST="vendor/dsh/runtime-manifest.json" \
+          node <<'NODE'
+          const fs = require('node:fs')
+          const snapshot = JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE, 'utf8'))
+          const runtime = JSON.parse(fs.readFileSync(process.env.RUNTIME_MANIFEST, 'utf8'))
+          for (const key of ['version', 'integrity', 'lockSha256']) {
+            if (runtime[key] !== snapshot[key]) throw new Error(`runtime ${key} differs from the shared snapshot`)
+          }
+          if (runtime.platform !== process.env.EXPECTED_PLATFORM || runtime.architecture !== process.env.EXPECTED_ARCHITECTURE) {
+            throw new Error(`runtime was assembled for ${runtime.platform}-${runtime.architecture}`)
+          }
+          NODE
+
+      - name: Create the Linux release configuration
+        shell: bash
+        env:
+          BUILDER_CONFIG: ${{ runner.temp }}/electron-builder-release.json
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const parts = process.env.GITHUB_REPOSITORY.split('/')
+          if (parts.length !== 2 || parts.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part))) {
+            throw new Error('GITHUB_REPOSITORY has an unexpected format')
+          }
+          const config = JSON.parse(JSON.stringify(pkg.build || {}))
+          config.publish = [{ provider: 'github', owner: parts[0], repo: parts[1], releaseType: 'release' }]
+          config.linux = {
+            ...(config.linux || {}),
+            artifactName: '${name}-${version}-linux-${arch}.${ext}'
+          }
+          fs.writeFileSync(process.env.BUILDER_CONFIG, `${JSON.stringify(config, null, 2)}\n`)
+          NODE
+
+      - name: Build AppImage and Debian packages
+        env:
+          BUILDER_CONFIG: ${{ runner.temp }}/electron-builder-release.json
+        run: npx --no-install electron-builder --config "$BUILDER_CONFIG" --linux deb AppImage --x64 --publish never
+
+      - name: Upload Linux release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-release
+          path: |
+            dist/latest-linux.yml
+            dist/*.AppImage
+            dist/*.deb
+            vendor/dsh/runtime-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  build_macos_runtime:
+    name: Assemble and test macOS arm64 runtime without secrets
+    needs:
+      - prepare
+      - release_guard
+    if: needs.prepare.outputs.should_release == 'true' && needs.release_guard.result == 'success'
+    runs-on: macos-15
+    timeout-minutes: 70
+    env:
+      DESKTOP_VERSION: ${{ needs.prepare.outputs.desktop_version }}
+      DSH_VERSION: ${{ needs.prepare.outputs.dsh_version }}
+    steps:
+      - name: Check out the release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify the native builder architecture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(uname -m)" != 'arm64' ]]; then
+            echo '::error::macOS release must be built natively on arm64'
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install desktop dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Apply the run-derived desktop version
+        run: npm version --no-git-tag-version --allow-same-version "$DESKTOP_VERSION"
+
+      - name: Download the shared DSH snapshot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dsh-runtime-snapshot
+          path: ${{ runner.temp }}/dsh-runtime-snapshot
+
+      - name: Test and assemble the macOS-native DSH runtime
+        env:
+          DSH_SNAPSHOT_DIR: ${{ runner.temp }}/dsh-runtime-snapshot
+        run: |
+          set -Eeuo pipefail
+          npm test
+          npm run bundle:dsh
+          npm run verify:dsh
+
+      - name: Verify the bundled runtime identity
+        shell: bash
+        env:
+          DSH_SNAPSHOT_DIR: ${{ runner.temp }}/dsh-runtime-snapshot
+          EXPECTED_PLATFORM: darwin
+          EXPECTED_ARCHITECTURE: arm64
+        run: |
+          set -Eeuo pipefail
+          SNAPSHOT_FILE="$DSH_SNAPSHOT_DIR/snapshot.json" \
+          RUNTIME_MANIFEST="vendor/dsh/runtime-manifest.json" \
+          node <<'NODE'
+          const fs = require('node:fs')
+          const snapshot = JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE, 'utf8'))
+          const runtime = JSON.parse(fs.readFileSync(process.env.RUNTIME_MANIFEST, 'utf8'))
+          for (const key of ['version', 'integrity', 'lockSha256']) {
+            if (runtime[key] !== snapshot[key]) throw new Error(`runtime ${key} differs from the shared snapshot`)
+          }
+          if (runtime.platform !== process.env.EXPECTED_PLATFORM || runtime.architecture !== process.env.EXPECTED_ARCHITECTURE) {
+            throw new Error(`runtime was assembled for ${runtime.platform}-${runtime.architecture}`)
+          }
+          NODE
+
+      - name: Archive the tested runtime without dereferencing links
+        shell: bash
+        env:
+          RUNTIME_ARCHIVE: ${{ runner.temp }}/macos-runtime/dsh-runtime.tar
+          RUNTIME_CHECKSUM: ${{ runner.temp }}/macos-runtime/dsh-runtime.tar.sha256
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$(dirname "$RUNTIME_ARCHIVE")"
+          # npm's .bin links are build conveniences; the app invokes DSH's
+          # lib/bin.js directly. Removing them also gives the signing boundary
+          # a link-free, declarative archive to validate before extraction.
+          node -e "require('node:fs').rmSync('vendor/dsh/node_modules/.bin',{recursive:true,force:true})"
+          npm run verify:dsh
+          COPYFILE_DISABLE=1 tar --format=pax -cf "$RUNTIME_ARCHIVE" -C vendor dsh
+          (
+            cd "$(dirname "$RUNTIME_ARCHIVE")"
+            shasum -a 256 "$(basename "$RUNTIME_ARCHIVE")" > "$(basename "$RUNTIME_CHECKSUM")"
+          )
+
+      - name: Upload the tested macOS runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-tested-runtime
+          path: |
+            ${{ runner.temp }}/macos-runtime/dsh-runtime.tar
+            ${{ runner.temp }}/macos-runtime/dsh-runtime.tar.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  sign_macos:
+    name: Package, sign, and notarize macOS arm64 release
+    needs:
+      - prepare
+      - release_guard
+      - build_macos_runtime
+    if: needs.prepare.outputs.should_release == 'true' && needs.release_guard.result == 'success' && needs.build_macos_runtime.result == 'success'
+    runs-on: macos-15
+    timeout-minutes: 70
+    environment: production-release
+    env:
+      DESKTOP_VERSION: ${{ needs.prepare.outputs.desktop_version }}
+      DSH_VERSION: ${{ needs.prepare.outputs.dsh_version }}
+    steps:
+      - name: Check out the protected release source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Verify the isolated signing runner architecture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ "$(uname -m)" != 'arm64' ]]; then
+            echo '::error::macOS release must be signed natively on arm64'
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install desktop tooling without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Apply the run-derived desktop version
+        run: npm version --ignore-scripts --no-git-tag-version --allow-same-version "$DESKTOP_VERSION"
+
+      - name: Download the tested macOS runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: macos-tested-runtime
+          path: ${{ runner.temp }}/macos-runtime
+
+      - name: Download the shared DSH snapshot
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dsh-runtime-snapshot
+          path: ${{ runner.temp }}/dsh-runtime-snapshot
+
+      - name: Safely restore and validate the tested runtime as data
+        shell: bash
+        env:
+          RUNTIME_DIR: ${{ runner.temp }}/macos-runtime
+          SNAPSHOT_DIR: ${{ runner.temp }}/dsh-runtime-snapshot
+        run: |
+          set -Eeuo pipefail
+          archive="$RUNTIME_DIR/dsh-runtime.tar"
+          checksum="$RUNTIME_DIR/dsh-runtime.tar.sha256"
+          [[ -f "$archive" && -f "$checksum" ]] || { echo '::error::Tested runtime archive is incomplete'; exit 1; }
+          (cd "$RUNTIME_DIR" && shasum -a 256 -c "$(basename "$checksum")")
+
+          archive_listing="$RUNNER_TEMP/runtime-archive-list.txt"
+          tar -tf "$archive" > "$archive_listing"
+          ARCHIVE_LISTING="$archive_listing" node <<'NODE'
+          const fs = require('node:fs')
+          const entries = fs.readFileSync(process.env.ARCHIVE_LISTING, 'utf8').split(/\n/).filter(Boolean)
+          if (entries.length === 0) throw new Error('runtime archive is empty')
+          for (const entry of entries) {
+            if (entry.startsWith('/') || entry.includes('\0') || entry.split('/').includes('..') || !(entry === 'dsh' || entry.startsWith('dsh/'))) {
+              throw new Error(`unsafe runtime archive path: ${JSON.stringify(entry)}`)
+            }
+          }
+          NODE
+
+          link_listing="$RUNNER_TEMP/runtime-link-list.txt"
+          tar -tvf "$archive" > "$link_listing"
+          LINK_LISTING="$link_listing" node <<'NODE'
+          const fs = require('node:fs')
+          for (const line of fs.readFileSync(process.env.LINK_LISTING, 'utf8').split(/\n/).filter(Boolean)) {
+            const kind = line[0]
+            if (kind === '-' || kind === 'd') continue
+            throw new Error(`runtime archive contains a disallowed entry type: ${line}`)
+          }
+          NODE
+
+          if [[ -e vendor/dsh || -L vendor/dsh ]]; then
+            echo '::error::Checkout unexpectedly contains vendor/dsh before safe extraction'
+            exit 1
+          fi
+          mkdir -p vendor
+          tar -xf "$archive" -C vendor --no-same-owner --no-same-permissions
+
+          if find vendor/dsh -type l -print -quit | grep -q .; then
+            echo '::error::Extracted runtime unexpectedly contains a symbolic link'
+            exit 1
+          fi
+
+          SNAPSHOT_FILE="$SNAPSHOT_DIR/snapshot.json" RUNTIME_MANIFEST="vendor/dsh/runtime-manifest.json" node <<'NODE'
+          const fs = require('node:fs')
+          const snapshot = JSON.parse(fs.readFileSync(process.env.SNAPSHOT_FILE, 'utf8'))
+          const runtime = JSON.parse(fs.readFileSync(process.env.RUNTIME_MANIFEST, 'utf8'))
+          for (const key of ['version', 'integrity', 'lockSha256']) {
+            if (runtime[key] !== snapshot[key]) throw new Error(`restored runtime ${key} differs from the shared snapshot`)
+          }
+          if (runtime.platform !== 'darwin' || runtime.architecture !== 'arm64') {
+            throw new Error(`restored runtime is for ${runtime.platform}-${runtime.architecture}`)
+          }
+          if (runtime.version !== process.env.DSH_VERSION) throw new Error('restored runtime has the wrong DSH version')
+          NODE
+
+      - name: Require Apple signing and notarization credentials
+        shell: bash
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -Eeuo pipefail
+          missing=0
+          for variable in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "::error::Required release secret ${variable} is missing"
+              missing=1
+            fi
+          done
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Create the hardened macOS release configuration
+        shell: bash
+        env:
+          BUILDER_CONFIG: ${{ runner.temp }}/electron-builder-release.json
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const fs = require('node:fs')
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          const parts = process.env.GITHUB_REPOSITORY.split('/')
+          if (parts.length !== 2 || parts.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part))) {
+            throw new Error('GITHUB_REPOSITORY has an unexpected format')
+          }
+          const config = JSON.parse(JSON.stringify(pkg.build || {}))
+          config.publish = [{ provider: 'github', owner: parts[0], repo: parts[1], releaseType: 'release' }]
+          config.forceCodeSigning = true
+          config.mac = {
+            ...(config.mac || {}),
+            hardenedRuntime: true,
+            gatekeeperAssess: false,
+            notarize: true,
+            artifactName: '${name}-${version}-mac-${arch}.${ext}'
+          }
+          config.dmg = {
+            ...(config.dmg || {}),
+            sign: true,
+            artifactName: '${name}-${version}-mac-${arch}.${ext}'
+          }
+          fs.writeFileSync(process.env.BUILDER_CONFIG, `${JSON.stringify(config, null, 2)}\n`)
+          NODE
+
+      - name: Build, sign, and notarize DMG and ZIP packages
+        env:
+          BUILDER_CONFIG: ${{ runner.temp }}/electron-builder-release.json
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx --no-install electron-builder --config "$BUILDER_CONFIG" --mac dmg zip --arm64 --publish never
+
+      - name: Notarize and staple the signed DMG container
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -Eeuo pipefail
+          dmg_paths=()
+          while IFS= read -r -d '' dmg_path; do dmg_paths+=("$dmg_path"); done < <(find dist -maxdepth 1 -type f -name '*.dmg' -print0)
+          if [[ "${#dmg_paths[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one signed DMG; found ${#dmg_paths[@]}"
+            exit 1
+          fi
+          xcrun notarytool submit "${dmg_paths[0]}" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          xcrun stapler staple "${dmg_paths[0]}"
+
+      - name: Verify signed and notarized macOS outputs
+        shell: bash
+        env:
+          EXPECTED_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -Eeuo pipefail
+          app_paths=()
+          while IFS= read -r -d '' app_path; do app_paths+=("$app_path"); done < <(find dist -maxdepth 2 -type d -name '*.app' -print0)
+          zip_paths=()
+          while IFS= read -r -d '' zip_path; do zip_paths+=("$zip_path"); done < <(find dist -maxdepth 1 -type f -name '*.zip' -print0)
+          dmg_paths=()
+          while IFS= read -r -d '' dmg_path; do dmg_paths+=("$dmg_path"); done < <(find dist -maxdepth 1 -type f -name '*.dmg' -print0)
+          if [[ "${#app_paths[@]}" -ne 1 || "${#zip_paths[@]}" -ne 1 || "${#dmg_paths[@]}" -ne 1 ]]; then
+            echo "::error::Expected one app, ZIP, and DMG; got ${#app_paths[@]}, ${#zip_paths[@]}, ${#dmg_paths[@]}"
+            exit 1
+          fi
+
+          app_path="${app_paths[0]}"
+          zip_path="${zip_paths[0]}"
+          dmg_path="${dmg_paths[0]}"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          codesign --verify --strict --verbose=2 "$dmg_path"
+          team_id="$(codesign -dv --verbose=4 "$app_path" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          if [[ "$team_id" != "$EXPECTED_TEAM_ID" ]]; then
+            echo "::error::Signed app TeamIdentifier ${team_id} does not match APPLE_TEAM_ID"
+            exit 1
+          fi
+          spctl --assess --type execute --verbose=4 "$app_path"
+          xcrun stapler validate "$app_path"
+          xcrun stapler validate "$dmg_path"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg_path"
+
+          zip_extract="$RUNNER_TEMP/verify-signed-zip"
+          mkdir -p "$zip_extract"
+          ditto -x -k "$zip_path" "$zip_extract"
+          zipped_apps=()
+          while IFS= read -r -d '' zipped_app; do zipped_apps+=("$zipped_app"); done < <(find "$zip_extract" -maxdepth 2 -type d -name '*.app' -print0)
+          if [[ "${#zipped_apps[@]}" -ne 1 ]]; then
+            echo "::error::Expected one app in signed ZIP; found ${#zipped_apps[@]}"
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "${zipped_apps[0]}"
+          zipped_team="$(codesign -dv --verbose=4 "${zipped_apps[0]}" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          [[ "$zipped_team" == "$EXPECTED_TEAM_ID" ]] || { echo '::error::ZIP contains an app signed by the wrong team'; exit 1; }
+
+          mount_point="$RUNNER_TEMP/verify-notarized-dmg"
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg_path" -nobrowse -readonly -mountpoint "$mount_point"
+          cleanup_mount() { hdiutil detach "$mount_point" -force >/dev/null 2>&1 || true; }
+          trap cleanup_mount EXIT
+          mounted_apps=()
+          while IFS= read -r -d '' mounted_app; do mounted_apps+=("$mounted_app"); done < <(find "$mount_point" -maxdepth 2 -type d -name '*.app' -print0)
+          if [[ "${#mounted_apps[@]}" -ne 1 ]]; then
+            echo "::error::Expected one app in DMG; found ${#mounted_apps[@]}"
+            exit 1
+          fi
+          codesign --verify --deep --strict --verbose=2 "${mounted_apps[0]}"
+          spctl --assess --type execute --verbose=4 "${mounted_apps[0]}"
+          mounted_team="$(codesign -dv --verbose=4 "${mounted_apps[0]}" 2>&1 | sed -n 's/^TeamIdentifier=//p')"
+          [[ "$mounted_team" == "$EXPECTED_TEAM_ID" ]] || { echo '::error::DMG contains an app signed by the wrong team'; exit 1; }
+          cleanup_mount
+          trap - EXIT
+
+      - name: Upload macOS release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: macos-release
+          path: |
+            dist/latest-mac.yml
+            dist/*.zip
+            dist/*.zip.blockmap
+            dist/*.dmg
+            vendor/dsh/runtime-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    name: Publish the complete cross-platform release
+    needs:
+      - prepare
+      - release_guard
+      - build_linux
+      - sign_macos
+    if: ${{ always() && needs.prepare.outputs.should_release == 'true' && needs.release_guard.result == 'success' && needs.build_linux.result == 'success' && needs.sign_macos.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production-release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      DESKTOP_VERSION: ${{ needs.prepare.outputs.desktop_version }}
+      DSH_VERSION: ${{ needs.prepare.outputs.dsh_version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+    steps:
+      - name: Download Linux release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux-release
+          path: ${{ runner.temp }}/release-assets/linux
+
+      - name: Download macOS release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: macos-release
+          path: ${{ runner.temp }}/release-assets/macos
+
+      - name: Download the DSH release manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dsh-release-manifest
+          path: ${{ runner.temp }}/release-assets/manifest
+
+      - name: Validate and publish one atomic release
+        shell: bash
+        env:
+          LINUX_ASSET_DIR: ${{ runner.temp }}/release-assets/linux
+          MACOS_ASSET_DIR: ${{ runner.temp }}/release-assets/macos
+          MANIFEST_ASSET_DIR: ${{ runner.temp }}/release-assets/manifest
+          RELEASE_NOTES: ${{ runner.temp }}/release-notes.md
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo '::error::GITHUB_REPOSITORY has an unexpected format'
+            exit 1
+          fi
+          if [[ ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::GITHUB_SHA has an unexpected format'
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v0\.5\.[0-9]+$ || "${RELEASE_TAG#v}" != "$DESKTOP_VERSION" ]]; then
+            echo '::error::Release tag does not match the derived desktop version'
+            exit 1
+          fi
+
+          assets=()
+          collect_one() {
+            local root="$1"
+            local pattern="$2"
+            local label="$3"
+            local matches=()
+            while IFS= read -r -d '' file; do
+              matches+=("$file")
+            done < <(find "$root" -type f -name "$pattern" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              echo "::error::Expected exactly one ${label}; found ${#matches[@]}"
+              exit 1
+            fi
+            assets+=("${matches[0]}")
+          }
+
+          collect_one "$LINUX_ASSET_DIR" 'latest-linux.yml' 'latest-linux.yml'
+          collect_one "$LINUX_ASSET_DIR" '*.AppImage' 'AppImage'
+          collect_one "$LINUX_ASSET_DIR" '*.deb' 'Debian package'
+          collect_one "$MACOS_ASSET_DIR" 'latest-mac.yml' 'latest-mac.yml'
+          collect_one "$MACOS_ASSET_DIR" '*.zip' 'macOS ZIP'
+          collect_one "$MACOS_ASSET_DIR" '*.zip.blockmap' 'macOS ZIP blockmap'
+          collect_one "$MACOS_ASSET_DIR" '*.dmg' 'macOS DMG'
+          collect_one "$MANIFEST_ASSET_DIR" 'dsh-runtime.json' 'DSH runtime manifest'
+
+          declare -A seen_names=()
+          for asset in "${assets[@]}"; do
+            name="$(basename "$asset")"
+            if [[ -n "${seen_names[$name]:-}" ]]; then
+              echo "::error::Duplicate release asset name: ${name}"
+              exit 1
+            fi
+            seen_names[$name]=1
+          done
+
+          linux_metadata="${assets[0]}"
+          linux_appimage="${assets[1]}"
+          macos_metadata="${assets[3]}"
+          macos_zip="${assets[4]}"
+          runtime_manifest="${assets[7]}"
+
+          LINUX_METADATA="$linux_metadata" \
+          LINUX_INSTALLER="$linux_appimage" \
+          MACOS_METADATA="$macos_metadata" \
+          MACOS_INSTALLER="$macos_zip" \
+          ruby <<'RUBY'
+          require 'yaml'
+          require 'digest'
+
+          [
+            ['Linux', ENV.fetch('LINUX_METADATA'), ENV.fetch('LINUX_INSTALLER')],
+            ['macOS', ENV.fetch('MACOS_METADATA'), ENV.fetch('MACOS_INSTALLER')]
+          ].each do |label, metadata_file, installer|
+            metadata = YAML.safe_load(File.read(metadata_file), permitted_classes: [], permitted_symbols: [], aliases: false)
+            raise "#{label} update metadata is not a mapping" unless metadata.is_a?(Hash)
+            files = metadata['files']
+            raise "#{label} update metadata files is not an array" unless files.is_a?(Array)
+            name = File.basename(installer)
+            matches = files.select { |entry| entry.is_a?(Hash) && entry['url'] == name }
+            raise "#{label} update metadata must reference #{name} exactly once" unless matches.length == 1
+            entry = matches.first
+            expected_hash = Digest::SHA512.file(installer).base64digest
+            expected_size = File.size(installer)
+            raise "#{label} update metadata SHA-512 does not match #{name}" unless entry['sha512'] == expected_hash
+            raise "#{label} update metadata size does not match #{name}" unless entry['size'] == expected_size
+          end
+          RUBY
+
+          LINUX_METADATA="$linux_metadata" \
+          LINUX_APPIMAGE="$linux_appimage" \
+          MACOS_METADATA="$macos_metadata" \
+          MACOS_ZIP="$macos_zip" \
+          RUNTIME_MANIFEST="$runtime_manifest" \
+          LINUX_RUNTIME_ROOT="$LINUX_ASSET_DIR" \
+          MACOS_RUNTIME_ROOT="$MACOS_ASSET_DIR" \
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const expectedDesktop = process.env.DESKTOP_VERSION
+          const expectedDsh = process.env.DSH_VERSION
+
+          function findExactlyOne (root, basename) {
+            const matches = []
+            function visit (directory) {
+              for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+                const file = path.join(directory, entry.name)
+                if (entry.isDirectory()) visit(file)
+                else if (entry.isFile() && entry.name === basename) matches.push(file)
+              }
+            }
+            visit(root)
+            if (matches.length !== 1) throw new Error(`expected one ${basename} below ${root}; found ${matches.length}`)
+            return matches[0]
+          }
+
+          for (const [name, file, installer] of [
+            ['Linux', process.env.LINUX_METADATA, process.env.LINUX_APPIMAGE],
+            ['macOS', process.env.MACOS_METADATA, process.env.MACOS_ZIP]
+          ]) {
+            const metadata = fs.readFileSync(file, 'utf8')
+            const match = metadata.match(/^version:\s*['\"]?([^'\"\s]+)['\"]?\s*$/m)
+            if (!match || match[1] !== expectedDesktop) {
+              throw new Error(`${name} update metadata does not match desktop ${expectedDesktop}`)
+            }
+            const expectedInstaller = path.basename(installer)
+            const urls = [...metadata.matchAll(/^\s*-\s+url:\s*['\"]?(.+?)['\"]?\s*$/gm)].map((item) => item[1])
+            if (!urls.includes(expectedInstaller)) {
+              throw new Error(`${name} update metadata does not reference uploaded asset ${expectedInstaller}`)
+            }
+          }
+          const manifest = JSON.parse(fs.readFileSync(process.env.RUNTIME_MANIFEST, 'utf8'))
+          if (manifest.package !== '@deepseek-ai/dsh' || manifest.version !== expectedDsh || manifest.desktopVersion !== expectedDesktop) {
+            throw new Error('dsh-runtime.json does not match the release outputs')
+          }
+
+          const nativeManifests = [
+            ['linux', 'x64', findExactlyOne(process.env.LINUX_RUNTIME_ROOT, 'runtime-manifest.json')],
+            ['darwin', 'arm64', findExactlyOne(process.env.MACOS_RUNTIME_ROOT, 'runtime-manifest.json')]
+          ].map(([platform, architecture, file]) => {
+            const native = JSON.parse(fs.readFileSync(file, 'utf8'))
+            if (native.platform !== platform || native.architecture !== architecture) {
+              throw new Error(`native runtime manifest is for ${native.platform}-${native.architecture}, expected ${platform}-${architecture}`)
+            }
+            return native
+          })
+          for (const key of ['version', 'integrity', 'lockSha256']) {
+            if (nativeManifests.some((native) => native[key] !== manifest[key])) {
+              throw new Error(`native runtime manifests disagree with the shared snapshot ${key}`)
+            }
+          }
+          NODE
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release ${RELEASE_TAG} already exists"
+            exit 1
+          fi
+
+          NOTES_FILE="$RELEASE_NOTES" node <<'NODE'
+          const fs = require('node:fs')
+          const notes = [
+            `DeepSeek Harness Desktop ${process.env.DESKTOP_VERSION}`,
+            '',
+            `Bundled official DeepSeek Harness: @deepseek-ai/dsh@${process.env.DSH_VERSION}`,
+            '',
+            'This release was produced from one shared npm snapshot and built natively for Linux x64 and macOS arm64.'
+          ].join('\n')
+          fs.writeFileSync(process.env.NOTES_FILE, `${notes}\n`)
+          NODE
+
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "DeepSeek Harness Desktop ${DESKTOP_VERSION}" \
+            --notes-file "$RELEASE_NOTES" \
+            --latest \
+            "${assets[@]}"
