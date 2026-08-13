@@ -34,7 +34,13 @@ curl --proto '=https' --tlsv1.2 -fsSL \
 npx deepseek-harness-desktop
 ```
 
-自动下载并启动最新版（macOS 加 `--install` 安装到「应用程序」；Linux 加 `--deb` 改用 deb）。npm 包本身只有几 KB，真正的安装包仍从 GitHub Releases 下载并缓存到本地。
+自动下载并启动最新版，三平台无感：
+
+- macOS：挂载 dmg 并启动（加 `--install` 装进「应用程序」）
+- Linux：直接运行 AppImage（缺 FUSE2 时自动改用 extract-and-run）
+- Windows：直接运行 portable 版（免安装）
+
+npm 包本身只有几 KB，真正的安装包仍从 GitHub Releases 下载并缓存到本地。
 
 ### 不能用 pip 安装 Desktop
 

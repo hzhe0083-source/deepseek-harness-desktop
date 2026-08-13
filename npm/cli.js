@@ -111,6 +111,9 @@ function pickAsset (release) {
   }
 
   if (PLATFORM === 'win32') {
+    // 优先免安装的 portable 版本；没有 portable 时退回 NSIS 安装向导
+    const portable = assets.find((a) => a.name.endsWith('.exe') && /portable/i.test(a.name))
+    if (portable) return portable
     const exe = assets.find((a) => a.name.endsWith('.exe'))
     if (exe) return exe
     fail(`最新版本 ${release.tag_name} 还没有 Windows 安装包。`)
@@ -220,6 +223,13 @@ function installFromDmg (dmgPath, releaseTag) {
   }
 }
 
+function hasFuse2 () {
+  // AppImage 正常模式需要 FUSE2（libfuse.so.2）；Ubuntu 22.04+ 默认不装。
+  // 探测失败（如 ldconfig 不存在）时乐观假设可用，失败时用户可加 --extract-and-run。
+  const probe = spawnSync('ldconfig', ['-p'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  return probe.status !== 0 || /libfuse\.so\.2\b/.test(probe.stdout || '')
+}
+
 function launchLinux (file) {
   try {
     chmodSync(file, 0o755)
@@ -227,14 +237,21 @@ function launchLinux (file) {
     fail(`无法给 ${file} 添加可执行权限。`)
   }
   const env = { ...process.env }
-  if (process.argv.includes('--extract-and-run')) {
+  if (process.argv.includes('--extract-and-run') || !hasFuse2()) {
     env.APPIMAGE_EXTRACT_AND_RUN = '1'
+    console.log('未检测到 libfuse2，自动改用 extract-and-run 方式启动…')
   }
-  console.log('启动 AppImage…（若报 libfuse.so.2 缺失：sudo apt install libfuse2，或用 --extract-and-run）')
+  console.log('启动 AppImage…（若报 libfuse.so.2 缺失：sudo apt install libfuse2）')
   spawnDetached(file, [], { env })
 }
 
 function launchWindows (exePath) {
+  if (/portable/i.test(exePath)) {
+    console.log('启动 Windows portable 版…')
+    spawnDetached(exePath)
+    return
+  }
+  console.log('运行 Windows 安装向导…（安装完成后从开始菜单或桌面启动）')
   spawnDetached(exePath)
 }
 
