@@ -1,7 +1,7 @@
 {
   "name": "deepseek-harness-desktop",
   "productName": "DeepSeek Harness Desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Electron desktop shell for the local DeepSeek Harness (DSH): Linux and macOS images that spawn `dsh web` and wrap its browser UI in a native window.",
   "main": "main/main.js",
   "author": "hzhe0083-source <hzhe0083@gmail.com>",

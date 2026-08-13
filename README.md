@@ -8,22 +8,22 @@ Electron 桌面壳，把**本地安装的 [DeepSeek Harness (DSH)](https://githu
 
 ## 平台镜像版本
 
-当前应用版本：**0.2.0**
+当前应用版本：**0.2.1**
 
 | 镜像 | 版本 | 架构 | 产物 | 状态 |
 | --- | --- | --- | --- | --- |
-| **Linux** | 0.1.0 起，现随 0.2.0 | x64 / 本机 | `.deb` + `.AppImage` | **已有** |
-| **macOS / 苹果镜像** | **0.2.0** | **Apple Silicon (arm64)** | `.app` + `.dmg` | **本次新增** |
+| **Linux** | 0.1.0 起，现随 0.2.1 | x64 / 本机 | `.deb` + `.AppImage` | **已有** |
+| **macOS / 苹果镜像** | **0.2.1** | **Apple Silicon (arm64)** | `.app` + `.dmg` | **已发布** |
 | Windows | — | x64 | `.exe` (NSIS) | 配置已预留，尚未作为正式镜像发布 |
 
 - Linux 镜像：`npm run dist:linux`
 - 苹果镜像：`npm run dist:mac`  
-  产物名：`DeepSeek Harness Desktop-0.2.0-mac-arm64.dmg`  
+  产物名：`DeepSeek Harness Desktop-0.2.1-mac-arm64.dmg`  
   以及未打包目录：`dist/mac-arm64/DeepSeek Harness Desktop.app`
 
-GitHub Releases 里的苹果镜像请认准 **`v0.2.0`** 和文件名里的 **`mac-arm64`**。Intel Mac 不在本镜像范围内。
+GitHub Releases 里的苹果镜像请认准 **`v0.2.1`** 和文件名里的 **`mac-arm64`**。Intel Mac 不在本镜像范围内。
 
-图标使用 GitHub 仓库 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 的官方 UI 鲸鱼标（`#4D6BFE`）。
+图标使用 GitHub 仓库 [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) 的官方 UI 鲸鱼标（`#4D6BFE`），圆角底板并按 Dock / 桌面尺寸留白。
 
 ## 特性
 
@@ -61,7 +61,7 @@ npm start
 
 ### 苹果镜像（macOS）
 
-1. 从 Release `v0.2.0` 下载 `DeepSeek Harness Desktop-0.2.0-mac-arm64.dmg`，或本地构建：
+1. 从 Release `v0.2.1` 下载 `DeepSeek Harness Desktop-0.2.1-mac-arm64.dmg`，或本地构建：
 
 ```sh
 npm install

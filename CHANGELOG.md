@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 — 图标圆角与尺寸
+
+- 官方鲸鱼标改为圆角底板，四周留白，适配 Dock / 桌面 / 多尺寸导出
+- 产物：`DeepSeek Harness Desktop-0.2.1-mac-arm64.dmg`
+
 ## 0.2.0 — 苹果镜像
 
 - 新增 **macOS / 苹果镜像**（Apple Silicon arm64）：`.app` + `.dmg`
