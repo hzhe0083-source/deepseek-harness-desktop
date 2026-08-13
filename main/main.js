@@ -3,27 +3,35 @@
 // DeepSeek Harness Desktop — Electron shell for DeepSeek Harness (DSH).
 //
 // The app does not reimplement any harness logic. By default it runs the
-// DSH copy bundled in vendor/dsh on Electron's own embedded Node runtime
+// DSH runtime bundled in vendor/dsh on Electron's own embedded Node runtime
 // (ELECTRON_RUN_AS_NODE=1), so a packaged install needs neither Node.js nor
-// a dsh install on the target machine. An explicit DSH_BIN always wins;
-// otherwise it falls back to a machine-installed dsh (nvm / Homebrew /
-// npm-global) and finally to `npx @deepseek-ai/dsh`.
+// a dsh install on the target machine. Release packages require that bundled
+// runtime; development runs may still use DSH_BIN or a machine-installed dsh.
 //
 // Startup: pick a free loopback port -> start dsh web -> poll until the SPA
 // is served -> point a sandboxed BrowserWindow at it. Closing the window
 // stops the server and quits the app.
 
 const { app, BrowserWindow, Menu, shell, dialog } = require('electron')
-const { autoUpdater } = require('electron-updater')
 const { spawn } = require('node:child_process')
 const net = require('node:net')
 const http = require('node:http')
 const path = require('node:path')
 const fs = require('node:fs')
+const { autoUpdater } = require('electron-updater')
+const { createUpdater } = require('./updater')
+const { hasSameOrigin, isSuccessfulHtmlResponse } = require('./http-safety')
 
+const MAC_APP_DISPLAY_NAME = 'Deepseek desktop'
 const DSH_HOST = '127.0.0.1'
 const READY_POLL_MS = 250
 const MAX_PORT_ATTEMPTS = 3
+
+if (process.platform === 'darwin') {
+  const userDataPath = app.getPath('userData')
+  app.setName(MAC_APP_DISPLAY_NAME)
+  app.setPath('userData', userDataPath)
+}
 
 let serverProc = null
 let serverPort = null
@@ -34,6 +42,9 @@ let logStream = null
 let logPath = null
 let serverLogTail = []
 let launchLabel = 'dsh'
+let serverShutdownPromise = null
+let serverStartupFailure = null
+let updaterController = null
 
 // ---------------------------------------------------------------------------
 // Small utilities
@@ -146,21 +157,26 @@ function findInstalledDsh () {
 // Path to the bundled dsh entry script, if the bundle is present.
 function bundledDshBin () {
   const root = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const bin = path.join(root, 'vendor', 'dsh', 'lib', 'bin.js')
-  try {
-    fs.accessSync(bin, fs.constants.R_OK)
-    return bin
-  } catch {
-    return null
+  const candidates = [
+    path.join(root, 'vendor', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'),
+    // Read old local bundles while transitioning to the complete runtime root.
+    path.join(root, 'vendor', 'dsh', 'lib', 'bin.js')
+  ]
+  for (const bin of candidates) {
+    try {
+      fs.accessSync(bin, fs.constants.R_OK)
+      return bin
+    } catch {
+      // keep looking
+    }
   }
+  return null
 }
 
 // Resolve how to launch the harness, in priority order:
 //   1. DSH_BIN — an explicit external dsh launcher the user pointed at.
 //   2. Bundled vendor/dsh on Electron's embedded Node (zero-dependency mode).
-//   3. A machine-installed `dsh` (nvm / Homebrew / pnpm / npm-global).
-//   4. `npx --yes @deepseek-ai/dsh` (machines without a global install;
-//      slower first start, so it gets a longer startup timeout).
+//   3. In development only, a machine-installed `dsh` or npm's latest DSH.
 function resolveDshLaunch (port) {
   const webArgs = ['web', '--host', DSH_HOST, '--port', String(port)]
   if (process.env.DSH_BIN) {
@@ -181,6 +197,9 @@ function resolveDshLaunch (port) {
       viaNpx: false
     }
   }
+  if (app.isPackaged) {
+    throw new Error('the packaged application is missing its bundled DeepSeek Harness runtime')
+  }
   const installed = findInstalledDsh()
   if (installed) {
     return { command: installed, args: webArgs, label: installed, viaNpx: false }
@@ -198,7 +217,11 @@ function resolveDshLaunch (port) {
 }
 
 function startupTimeoutMs (viaNpx) {
-  if (process.env.DSH_STARTUP_TIMEOUT_MS) return Number(process.env.DSH_STARTUP_TIMEOUT_MS)
+  if (process.env.DSH_STARTUP_TIMEOUT_MS) {
+    const requested = Number(process.env.DSH_STARTUP_TIMEOUT_MS)
+    if (Number.isFinite(requested) && requested > 0) return requested
+    appendLog('ignored invalid DSH_STARTUP_TIMEOUT_MS; expected a positive number\n')
+  }
   return viaNpx ? 180_000 : 60_000
 }
 
@@ -208,6 +231,7 @@ function startupTimeoutMs (viaNpx) {
 
 function startDshServer (launch) {
   const env = { ...process.env, ...(launch.env || {}) }
+  serverStartupFailure = null
   if (!launch.env || !launch.env.ELECTRON_RUN_AS_NODE) {
     // bundled mode needs this flag; every other mode must not inherit it
     delete env.ELECTRON_RUN_AS_NODE
@@ -224,12 +248,16 @@ function startDshServer (launch) {
 
   serverProc.on('error', (err) => {
     appendLog(`spawn error: ${err.message}\n`)
+    serverStartupFailure = new Error(`could not start dsh: ${err.message}`)
     serverProc = null
   })
 
   serverProc.on('exit', (code, signal) => {
     appendLog(`dsh exited (code=${code}, signal=${signal})\n`)
     serverProc = null
+    if (!quitting) {
+      serverStartupFailure = new Error(`dsh exited during startup (code=${code}, signal=${signal})`)
+    }
     if (!quitting && mainWindow) {
       mainWindow.destroy()
       dialog.showErrorBox(
@@ -243,52 +271,98 @@ function startDshServer (launch) {
 }
 
 function shutdownServer () {
-  if (!serverProc) return
+  if (serverShutdownPromise) return serverShutdownPromise
+  if (!serverProc) return Promise.resolve()
   const proc = serverProc
   serverProc = null
-  try {
-    if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGTERM')
-    else proc.kill('SIGTERM')
-  } catch {
-    try { proc.kill('SIGTERM') } catch { /* already gone */ }
-  }
-  const killer = setTimeout(() => {
-    try {
-      if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL')
-      else proc.kill('SIGKILL')
-    } catch {
-      // already gone
+
+  serverShutdownPromise = new Promise((resolveShutdown) => {
+    let settled = false
+    let killer = null
+    let forcedFinish = null
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (killer) clearTimeout(killer)
+      if (forcedFinish) clearTimeout(forcedFinish)
+      serverShutdownPromise = null
+      resolveShutdown()
     }
-  }, 3000)
-  killer.unref()
+    proc.once('exit', finish)
+
+    try {
+      if (proc.exitCode !== null) {
+        finish()
+      } else if (proc.pid && process.platform !== 'win32') {
+        process.kill(-proc.pid, 'SIGTERM')
+      } else {
+        proc.kill('SIGTERM')
+      }
+    } catch {
+      try { proc.kill('SIGTERM') } catch { finish() }
+    }
+
+    if (!settled) {
+      killer = setTimeout(() => {
+        try {
+          if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL')
+          else proc.kill('SIGKILL')
+        } catch {
+          finish()
+          return
+        }
+        // Do not hold an update forever if a platform never reports `exit`.
+        forcedFinish = setTimeout(finish, 1000)
+        forcedFinish.unref()
+      }, 3000)
+      killer.unref()
+    }
+  })
+  return serverShutdownPromise
 }
 
 function waitForServer (url, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   return new Promise((resolve, reject) => {
+    let settled = false
+    let retryTimer = null
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      if (error) reject(error)
+      else resolve()
+    }
     const attempt = () => {
+      if (settled) return
+      let requestFinished = false
+      const completeRequest = (callback) => {
+        if (requestFinished || settled) return
+        requestFinished = true
+        callback()
+      }
       const req = http.get(url, (res) => {
         res.resume()
-        if (res.statusCode >= 200 && res.statusCode < 500) {
-          resolve()
-        } else {
-          retry()
-        }
+        completeRequest(() => {
+          if (isSuccessfulHtmlResponse(res.statusCode, res.headers['content-type'])) finish()
+          else retry()
+        })
       })
-      req.on('error', retry)
+      req.on('error', () => completeRequest(retry))
       req.setTimeout(2000, () => {
-        req.destroy()
-        retry()
+        completeRequest(() => {
+          req.destroy()
+          retry()
+        })
       })
     }
     const retry = () => {
-      if (serverProc && serverProc.exitCode !== null) {
-        return reject(new Error(`dsh exited during startup (code ${serverProc.exitCode})`))
-      }
+      if (settled) return
+      if (serverStartupFailure) return finish(serverStartupFailure)
       if (Date.now() > deadline) {
-        return reject(new Error(`timed out after ${timeoutMs} ms waiting for the dsh server`))
+        return finish(new Error(`timed out after ${timeoutMs} ms waiting for the dsh server`))
       }
-      setTimeout(attempt, READY_POLL_MS)
+      retryTimer = setTimeout(attempt, READY_POLL_MS)
     }
     attempt()
   })
@@ -325,10 +399,9 @@ function createMainWindow () {
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(serverUrl) && /^https?:/i.test(url)) {
-      event.preventDefault()
-      shell.openExternal(url)
-    }
+    if (hasSameOrigin(url, serverUrl)) return
+    event.preventDefault()
+    if (/^https?:/i.test(url)) void shell.openExternal(url)
   })
 
   mainWindow.on('closed', () => {
@@ -339,87 +412,43 @@ function createMainWindow () {
 }
 
 function installMenu () {
+  const updateItem = updaterController
+    ? updaterController.menuItem()
+    : { label: '检查更新…', enabled: false }
+  const versionItem = { label: `版本 ${app.getVersion()}`, enabled: false }
   if (process.platform === 'darwin') {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
-      { role: 'appMenu' },
+      {
+        label: app.name,
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          updateItem,
+          versionItem,
+          { type: 'separator' },
+          { role: 'services' },
+          { type: 'separator' },
+          { role: 'hide' },
+          { role: 'hideOthers' },
+          { role: 'unhide' },
+          { type: 'separator' },
+          { role: 'quit' }
+        ]
+      },
       { role: 'editMenu' },
       { role: 'viewMenu' },
       { role: 'windowMenu' }
     ]))
     return
   }
-  if (!process.env.DSH_DESKTOP_DEV) Menu.setApplicationMenu(null)
-}
-
-// ---------------------------------------------------------------------------
-// Auto-update (electron-updater, GitHub releases)
-// ---------------------------------------------------------------------------
-
-// On Linux, electron-updater only supports the AppImage distribution — deb
-// packages cannot self-replace, so auto-update is disabled there.
-function updaterSupported () {
-  return app.isPackaged && !!process.env.APPIMAGE
-}
-
-function installUpdater () {
-  const log = (level) => (message) => appendLog(`[updater:${level}] ${message}\n`)
-  autoUpdater.logger = {
-    info: log('info'),
-    warn: log('warn'),
-    error: log('error'),
-    debug: log('debug')
-  }
-  autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
-
-  autoUpdater.on('checking-for-update', () => appendLog('[updater] checking for updates\n'))
-  autoUpdater.on('update-available', (info) => {
-    appendLog(`[updater] update available: ${info.version} (current ${app.getVersion()})\n`)
-  })
-  autoUpdater.on('update-not-available', (info) => {
-    appendLog(`[updater] up to date (${info.version})\n`)
-  })
-  autoUpdater.on('download-progress', (p) => {
-    appendLog(`[updater] downloading ${p.percent.toFixed(1)}% @ ${(p.bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s\n`)
-  })
-  autoUpdater.on('update-downloaded', (info) => {
-    appendLog(`[updater] downloaded ${info.version} — ready to install\n`)
-    if (process.env.DSH_DESKTOP_AUTOUPDATE_TEST === '1') {
-      appendLog('[updater] test mode: quitting to install immediately\n')
-      setImmediate(() => autoUpdater.quitAndInstall())
-      return
+  const template = [
+    {
+      label: '应用',
+      submenu: [updateItem, versionItem, { type: 'separator' }, { role: 'quit' }]
     }
-    const opts = {
-      type: 'info',
-      title: '更新已就绪',
-      message: `DeepSeek Harness Desktop ${info.version} 已下载完成`,
-      detail: '立即重启并安装,或稍后退出应用时自动安装。',
-      buttons: ['立即重启安装', '稍后'],
-      defaultId: 0,
-      cancelId: 1
-    }
-    const choice = mainWindow
-      ? dialog.showMessageBoxSync(mainWindow, opts)
-      : dialog.showMessageBoxSync(opts)
-    if (choice === 0) autoUpdater.quitAndInstall()
-  })
-  autoUpdater.on('error', (err) => {
-    appendLog(`[updater] error: ${err && err.message ? err.message : String(err)}\n`)
-  })
-}
-
-function startUpdateCheck () {
-  if (!updaterSupported()) {
-    appendLog(`[updater] auto-update skipped (packaged=${app.isPackaged}, APPIMAGE=${process.env.APPIMAGE || 'unset'} — only the AppImage distribution self-updates on Linux)\n`)
-    return
-  }
-  // Give the window a moment to settle before checking in the background.
-  const delay = process.env.DSH_DESKTOP_AUTOUPDATE_TEST === '1' ? 3000 : 8000
-  setTimeout(() => {
-    autoUpdater.checkForUpdates().catch((err) => {
-      appendLog(`[updater] check failed: ${err && err.message ? err.message : String(err)}\n`)
-    })
-  }, delay)
+  ]
+  if (process.env.DSH_DESKTOP_DEV) template.push({ role: 'viewMenu' })
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
 // ---------------------------------------------------------------------------
@@ -446,7 +475,7 @@ async function boot () {
     } catch (err) {
       lastError = err
       appendLog(`attempt ${attempt} failed: ${err.message}\n`)
-      shutdownServer()
+      await shutdownServer()
     }
   }
 
@@ -465,8 +494,12 @@ async function boot () {
   }
 
   appendLog(`dsh ready on ${serverUrl}\n`)
-  createMainWindow()
-  startUpdateCheck()
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    await mainWindow.loadURL(serverUrl)
+    mainWindow.show()
+  } else {
+    createMainWindow()
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -486,8 +519,25 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    ensureLogStream()
+    updaterController = createUpdater({
+      app,
+      autoUpdater,
+      dialog,
+      shell,
+      getMainWindow: () => mainWindow,
+      appendLog,
+      beforeInstall: async () => {
+        quitting = true
+        await shutdownServer()
+      },
+      afterInstallFailure: async () => {
+        quitting = false
+        await boot()
+      }
+    })
     installMenu()
-    installUpdater()
+    updaterController.start()
     boot().catch((err) => {
       dialog.showErrorBox('DeepSeek Harness Desktop failed to boot', String(err && err.stack ? err.stack : err))
       app.quit()
@@ -500,12 +550,12 @@ if (!gotLock) {
 
   app.on('window-all-closed', () => {
     quitting = true
-    shutdownServer()
+    void shutdownServer()
     app.quit()
   })
 
   app.on('before-quit', () => {
     quitting = true
-    shutdownServer()
+    void shutdownServer()
   })
 }

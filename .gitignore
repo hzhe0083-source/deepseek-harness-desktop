@@ -1,5 +1,6 @@
 node_modules/
 vendor/
+.omx/
 dist/
 *.log
 .DS_Store
