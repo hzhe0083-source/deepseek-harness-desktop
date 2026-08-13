@@ -2,7 +2,7 @@
   "name": "deepseek-harness-desktop",
   "productName": "DeepSeek Harness Desktop",
   "desktopName": "deepseek-harness-desktop.desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Thin Electron desktop shell for DeepSeek Harness: reuse a local dsh or download a pinned runtime on first launch.",
   "main": "main/main.js",
   "author": "hzhe0083-source <hzhe0083@gmail.com>",

@@ -11,6 +11,7 @@ const root = path.join(__dirname, '..')
 const installScript = path.join(root, 'install.sh')
 const packageJson = require('../package.json')
 const LINUX_ICON_SIZES = [16, 24, 32, 48, 64, 128, 256, 512, 1024]
+const posixOnly = process.platform === 'win32' ? { skip: 'install.sh is POSIX-only' } : {}
 
 function pngSize (file) {
   const buf = fs.readFileSync(file)
@@ -61,7 +62,7 @@ test('electron-builder ships a multi-size Linux icon set', () => {
   }
 })
 
-test('install.sh writes a Ubuntu application launcher with an icon path', () => {
+test('install.sh writes a Ubuntu application launcher with an icon path', posixOnly, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-desktop-'))
   try {
     const appimage = path.join(dir, 'DeepSeek-Harness-Desktop.AppImage')
@@ -89,7 +90,7 @@ test('install.sh writes a Ubuntu application launcher with an icon path', () => 
   }
 })
 
-test('install.sh writes a wrapper that extract-and-runs AppImages without fuse2', () => {
+test('install.sh writes a wrapper that extract-and-runs AppImages without fuse2', posixOnly, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-launcher-'))
   try {
     const appimage = path.join(dir, 'DeepSeek-Harness-Desktop.AppImage')
@@ -113,7 +114,7 @@ test('install.sh writes a wrapper that extract-and-runs AppImages without fuse2'
   }
 })
 
-test('install.sh still writes a launcher if the icon file is missing', () => {
+test('install.sh still writes a launcher if the icon file is missing', posixOnly, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-desktop-'))
   try {
     const appimage = path.join(dir, 'app.AppImage')

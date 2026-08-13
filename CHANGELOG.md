@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.5.0 — 瘦安装包（待发布）
+## 0.5.1 — Windows 安装包进入正式 Release
+
+- GitHub Release 增加 Windows x64 NSIS 与 portable
+- Windows CI 不再跑 POSIX 专用的 `install.sh` 测试，避免发版任务被 Linux 测试卡住
+
+## 0.5.0 — 瘦安装包
 
 - Desktop 安装包不再携带完整 DSH，显著缩小 Desktop 下载体积；DSH 改为独立 Release 运行时资产
 - 运行时解析顺序改为 `DSH_BIN` → 本机 `dsh` → 已校验缓存 → 首次下载固定的 `@deepseek-ai/dsh@0.1.0-rc.6`
