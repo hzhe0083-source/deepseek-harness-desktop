@@ -26,6 +26,26 @@ test('setup.sh --check reports a usable Node.js 18+ environment', () => {
   assert.match(result.stdout, /OK/)
 })
 
+test('Windows packaging uses a committed multi-size ICO', () => {
+  assert.equal(packageJson.build.win.icon, 'assets/icon.ico')
+  assert.equal(packageJson.build.nsis.installerIcon, 'assets/icon.ico')
+  assert.equal(packageJson.build.nsis.uninstallerIcon, 'assets/icon.ico')
+
+  const ico = fs.readFileSync(path.join(root, 'assets', 'icon.ico'))
+  assert.equal(ico[0], 0)
+  assert.equal(ico[1], 0)
+  assert.equal(ico[2], 1)
+  assert.equal(ico[3], 0)
+  const count = ico.readUInt16LE(4)
+  assert.equal(count, 7)
+  const sizes = []
+  for (let i = 0; i < count; i++) {
+    const off = 6 + i * 16
+    sizes.push(ico[off] || 256)
+  }
+  assert.deepEqual(sizes.sort((a, b) => a - b), [16, 24, 32, 48, 64, 128, 256])
+})
+
 test('electron-builder ships a multi-size Linux icon set', () => {
   assert.equal(packageJson.build.linux.icon, 'assets/linux-icons')
   assert.equal(packageJson.desktopName, 'deepseek-harness-desktop.desktop')

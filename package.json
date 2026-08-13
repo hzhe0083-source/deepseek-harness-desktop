@@ -67,7 +67,7 @@
         "nsis",
         "portable"
       ],
-      "icon": "assets/icon.png",
+      "icon": "assets/icon.ico",
       "artifactName": "DeepSeek-Harness-Desktop-${version}-win-${arch}.${ext}"
     },
     "portable": {
@@ -100,7 +100,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico"
     }
   },
   "dependencies": {
