@@ -1,3 +1,5 @@
+<p align="right"><strong>中文</strong> · <a href="./README.en.md">English</a></p>
+
 # DeepSeek Harness Desktop
 
 ## 下载与安装
