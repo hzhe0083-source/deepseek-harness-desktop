@@ -8,9 +8,10 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder",
-    "dist:dir": "electron-builder --dir",
-    "dist:linux": "electron-builder --linux deb AppImage"
+    "bundle:dsh": "node scripts/bundle-dsh.mjs",
+    "dist": "npm run bundle:dsh && electron-builder",
+    "dist:dir": "npm run bundle:dsh && electron-builder --dir",
+    "dist:linux": "npm run bundle:dsh && electron-builder --linux deb AppImage"
   },
   "devDependencies": {
     "electron": "^41.0.3",
@@ -26,7 +27,17 @@
     "files": [
       "main/**/*",
       "assets/icon.png",
+      "scripts/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor",
+        "to": "vendor",
+        "filter": [
+          "dsh/**/*"
+        ]
+      }
     ],
     "linux": {
       "target": [

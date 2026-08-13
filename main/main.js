@@ -1,11 +1,16 @@
 'use strict'
 
-// DeepSeek Harness Desktop — Electron shell for the local DSH.
+// DeepSeek Harness Desktop — Electron shell for DeepSeek Harness (DSH).
 //
-// The app does not reimplement any harness logic: it starts the locally
-// installed `dsh web` server on a free loopback port, waits until the SPA is
-// actually being served, and then points a sandboxed BrowserWindow at it.
-// Closing the window stops the server and quits the app.
+// The app does not reimplement any harness logic. By default it runs the
+// DSH copy bundled in vendor/dsh on Electron's own embedded Node runtime
+// (ELECTRON_RUN_AS_NODE=1), so a packaged install needs neither Node.js nor
+// a dsh install on the target machine. A local `dsh` on PATH / DSH_BIN is
+// only used when the bundle is absent or explicitly requested.
+//
+// Startup: pick a free loopback port -> start dsh web -> poll until the SPA
+// is served -> point a sandboxed BrowserWindow at it. Closing the window
+// stops the server and quits the app.
 
 const { app, BrowserWindow, Menu, shell, dialog } = require('electron')
 const { spawn } = require('node:child_process')
@@ -59,51 +64,42 @@ function ensureLogStream () {
   logStream = fs.createWriteStream(logPath, { flags: 'a' })
 }
 
-// Resolve the `dsh` launcher. Explicit DSH_BIN wins; otherwise we look for
-// `dsh` on PATH and in the common nvm / npm-global locations, because a
-// packaged app does not inherit the shell profile PATH.
-function resolveDshCommand () {
-  if (process.env.DSH_BIN) return process.env.DSH_BIN
-  const candidates = [
-    'dsh',
-    ...(process.env.NVM_BIN ? [path.join(process.env.NVM_BIN, 'dsh')] : []),
-    path.join(osHome(), '.nvm', 'current', 'bin', 'dsh'),
-    path.join(osHome(), '.nvm', 'versions', 'node', '*', 'bin', 'dsh')
-  ]
-  for (const candidate of candidates) {
-    const expanded = expandGlob(candidate)
-    for (const resolved of expanded) {
-      try {
-        fs.accessSync(resolved, fs.constants.X_OK)
-        return resolved
-      } catch {
-        // keep looking
-      }
+// Path to the bundled dsh entry script, if the bundle is present.
+function bundledDshBin () {
+  const root = app.isPackaged ? process.resourcesPath : app.getAppPath()
+  const bin = path.join(root, 'vendor', 'dsh', 'lib', 'bin.js')
+  try {
+    fs.accessSync(bin, fs.constants.R_OK)
+    return bin
+  } catch {
+    return null
+  }
+}
+
+// Resolve how to launch the harness, highest fidelity first:
+//   1. DSH_BIN — an explicit external dsh launcher the user pointed at.
+//   2. Bundled vendor/dsh on Electron's embedded Node (zero-dependency mode).
+//   3. `dsh` on PATH — development convenience / fallback.
+function resolveDshLaunch (port) {
+  const webArgs = ['web', '--host', DSH_HOST, '--port', String(port)]
+  if (process.env.DSH_BIN) {
+    return {
+      command: process.env.DSH_BIN,
+      args: webArgs,
+      env: {},
+      description: `external DSH_BIN (${process.env.DSH_BIN})`
     }
   }
-  return 'dsh' // let spawn fail with a clear ENOENT message
-}
-
-function osHome () {
-  return process.env.HOME || process.env.USERPROFILE || ''
-}
-
-function expandGlob (pattern) {
-  if (!pattern.includes('*')) return [pattern]
-  const star = pattern.indexOf('*')
-  const prefix = pattern.slice(0, star)
-  const suffix = pattern.slice(star + 1)
-  const base = prefix.slice(0, prefix.lastIndexOf('/') + 1)
-  const namePrefix = prefix.slice(prefix.lastIndexOf('/') + 1)
-  let dir
-  try {
-    dir = fs.readdirSync(base)
-  } catch {
-    return []
+  const bundledBin = bundledDshBin()
+  if (bundledBin) {
+    return {
+      command: process.execPath,
+      args: ['--expose-internals', bundledBin, ...webArgs],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+      description: `bundled dsh on Electron's embedded Node ${process.versions.node}`
+    }
   }
-  return dir
-    .filter((entry) => entry.startsWith(namePrefix))
-    .map((entry) => base + entry + suffix)
+  return { command: 'dsh', args: webArgs, env: {}, description: 'dsh on PATH' }
 }
 
 // ---------------------------------------------------------------------------
@@ -111,12 +107,11 @@ function expandGlob (pattern) {
 // ---------------------------------------------------------------------------
 
 function startDshServer (port) {
-  const command = resolveDshCommand()
-  const args = ['web', '--host', DSH_HOST, '--port', String(port)]
-  const env = { ...process.env }
-  delete env.ELECTRON_RUN_AS_NODE
+  const launch = resolveDshLaunch(port)
+  const env = { ...process.env, ...launch.env }
 
-  serverProc = spawn(command, args, {
+  appendLog(`spawning: ${launch.description}\n`)
+  serverProc = spawn(launch.command, launch.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env
   })
@@ -244,7 +239,7 @@ function createMainWindow () {
 
 async function boot () {
   ensureLogStream()
-  appendLog(`--- boot: resolving dsh via ${resolveDshCommand()} ---\n`)
+  appendLog(`--- boot: ${resolveDshLaunch(0).description} ---\n`)
 
   let lastError = null
   for (let attempt = 1; attempt <= MAX_PORT_ATTEMPTS; attempt++) {
@@ -267,8 +262,8 @@ async function boot () {
     dialog.showErrorBox(
       'DeepSeek Harness failed to start',
       `${lastError.message}\n\n` +
-        `Command tried: ${resolveDshCommand()} web --host ${DSH_HOST} --port <port>\n` +
-        `Tip: install the harness with \`npm i -g @deepseek-ai/dsh\` or point DSH_BIN at the dsh launcher.\n\n` +
+        `Launch mode: ${resolveDshLaunch(0).description}\n` +
+        `Tip: set DSH_BIN to a dsh launcher, or reinstall the app so vendor/dsh is present.\n\n` +
         `Server log: ${logPath}\n${serverLogTail.join('')}`
     )
     app.quit()
