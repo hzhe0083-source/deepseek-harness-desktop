@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 — 自动更新
+
+- 集成 **electron-updater**，更新源为 GitHub Releases（公开仓库，用户端无需凭据）
+- AppImage 启动后自动检查更新并后台下载，完成后弹窗「立即重启安装 / 稍后」；退出时也会自动安装（`autoInstallOnAppQuit`）
+- Linux 自动更新仅支持 **AppImage**；deb 安装包无法自替换，运行时会记录提示
+- 更新链路测试开关：`DSH_DESKTOP_AUTOUPDATE_TEST=1`（下载完成即自动重启安装，用于 CI/验证）
+- `--publish never` 固化到构建脚本；`latest-linux.yml` 随构建生成
+
 ## 0.3.1 — 官方 Web UI 鱼标
 
 - 图标改为应用内 `FishLogo`（与侧栏 / 欢迎页同一条路径），不再用网站 favicon 加浅色卡片

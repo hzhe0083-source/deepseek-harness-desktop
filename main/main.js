@@ -14,6 +14,7 @@
 // stops the server and quits the app.
 
 const { app, BrowserWindow, Menu, shell, dialog } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const { spawn } = require('node:child_process')
 const net = require('node:net')
 const http = require('node:http')
@@ -351,6 +352,77 @@ function installMenu () {
 }
 
 // ---------------------------------------------------------------------------
+// Auto-update (electron-updater, GitHub releases)
+// ---------------------------------------------------------------------------
+
+// On Linux, electron-updater only supports the AppImage distribution — deb
+// packages cannot self-replace, so auto-update is disabled there.
+function updaterSupported () {
+  return app.isPackaged && !!process.env.APPIMAGE
+}
+
+function installUpdater () {
+  const log = (level) => (message) => appendLog(`[updater:${level}] ${message}\n`)
+  autoUpdater.logger = {
+    info: log('info'),
+    warn: log('warn'),
+    error: log('error'),
+    debug: log('debug')
+  }
+  autoUpdater.autoDownload = true
+  autoUpdater.autoInstallOnAppQuit = true
+
+  autoUpdater.on('checking-for-update', () => appendLog('[updater] checking for updates\n'))
+  autoUpdater.on('update-available', (info) => {
+    appendLog(`[updater] update available: ${info.version} (current ${app.getVersion()})\n`)
+  })
+  autoUpdater.on('update-not-available', (info) => {
+    appendLog(`[updater] up to date (${info.version})\n`)
+  })
+  autoUpdater.on('download-progress', (p) => {
+    appendLog(`[updater] downloading ${p.percent.toFixed(1)}% @ ${(p.bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s\n`)
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    appendLog(`[updater] downloaded ${info.version} — ready to install\n`)
+    if (process.env.DSH_DESKTOP_AUTOUPDATE_TEST === '1') {
+      appendLog('[updater] test mode: quitting to install immediately\n')
+      setImmediate(() => autoUpdater.quitAndInstall())
+      return
+    }
+    const opts = {
+      type: 'info',
+      title: '更新已就绪',
+      message: `DeepSeek Harness Desktop ${info.version} 已下载完成`,
+      detail: '立即重启并安装,或稍后退出应用时自动安装。',
+      buttons: ['立即重启安装', '稍后'],
+      defaultId: 0,
+      cancelId: 1
+    }
+    const choice = mainWindow
+      ? dialog.showMessageBoxSync(mainWindow, opts)
+      : dialog.showMessageBoxSync(opts)
+    if (choice === 0) autoUpdater.quitAndInstall()
+  })
+  autoUpdater.on('error', (err) => {
+    appendLog(`[updater] error: ${err && err.message ? err.message : String(err)}\n`)
+  })
+}
+
+function startUpdateCheck () {
+  if (!updaterSupported()) {
+    appendLog(`[updater] auto-update skipped (packaged=${app.isPackaged}, APPIMAGE=${process.env.APPIMAGE || 'unset'} — only the AppImage distribution self-updates on Linux)\n`)
+    return
+  }
+  // Give the window a moment to settle before checking in the background.
+  const delay = process.env.DSH_DESKTOP_AUTOUPDATE_TEST === '1' ? 3000 : 8000
+  setTimeout(() => {
+    autoUpdater.checkForUpdates().catch((err) => {
+      appendLog(`[updater] check failed: ${err && err.message ? err.message : String(err)}\n`)
+    })
+  }, delay)
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -394,6 +466,7 @@ async function boot () {
 
   appendLog(`dsh ready on ${serverUrl}\n`)
   createMainWindow()
+  startUpdateCheck()
 }
 
 // ---------------------------------------------------------------------------
@@ -414,6 +487,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     installMenu()
+    installUpdater()
     boot().catch((err) => {
       dialog.showErrorBox('DeepSeek Harness Desktop failed to boot', String(err && err.stack ? err.stack : err))
       app.quit()
