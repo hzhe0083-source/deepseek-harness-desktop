@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 官方 Web UI 鱼标
+
+- 图标改为应用内 `FishLogo`（与侧栏 / 欢迎页同一条路径），不再用网站 favicon 加浅色卡片
+- 深色底板对齐 Web UI（`#0F1115` / 主文字 `#F9FAFB`）
+- 单层圆角、鱼标放大到 Dock 安全区
+
 ## 0.3.0 — 内置 DSH 运行时（零依赖）
 
 - **随包捆绑完整 DSH**：`scripts/bundle-dsh.mjs` 把本机 DSH 安装复制进 `vendor/dsh`（约 212 MB，自动裁剪 win32/darwin/musl 预编译二进制），electron-builder 通过 `extraResources` 打进安装包

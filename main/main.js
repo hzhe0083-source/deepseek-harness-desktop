@@ -306,7 +306,7 @@ function createMainWindow () {
     show: false,
     title: 'DeepSeek Harness',
     autoHideMenuBar: process.platform !== 'darwin',
-    backgroundColor: '#0e1116',
+    backgroundColor: '#0F1115',
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
       nodeIntegration: false,
