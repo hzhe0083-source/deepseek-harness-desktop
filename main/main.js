@@ -23,6 +23,27 @@ const desktopPackage = require('../package.json')
 const { resolveRuntime } = require('./runtime-manager')
 const { hasSameOrigin, isSuccessfulHtmlResponse } = require('./http-safety')
 
+// GNOME/Ubuntu match the running window to the .desktop file via WM_CLASS.
+// Keep this aligned with package.json desktopName and linux.desktop.entry.StartupWMClass.
+if (process.platform === 'linux') {
+  app.setDesktopName('deepseek-harness-desktop.desktop')
+}
+if (process.platform === 'win32') {
+  app.setAppUserModelId('com.hzhe0083.deepseek-harness-desktop')
+}
+
+// Ubuntu 22.04+ often ships only libfuse3. AppImage self-update restarts the
+// new file directly; without fuse2 that restart is silent. Inherit this so
+// electron-updater's child AppImage can extract-and-run.
+if (process.platform === 'linux' && process.env.APPIMAGE && !process.env.APPIMAGE_EXTRACT_AND_RUN) {
+  const fuse2 = [
+    '/lib/x86_64-linux-gnu/libfuse.so.2',
+    '/usr/lib/x86_64-linux-gnu/libfuse.so.2',
+    '/lib64/libfuse.so.2'
+  ].some((candidate) => fs.existsSync(candidate))
+  if (!fuse2) process.env.APPIMAGE_EXTRACT_AND_RUN = '1'
+}
+
 const DSH_HOST = '127.0.0.1'
 const READY_POLL_MS = 250
 const MAX_PORT_ATTEMPTS = 3
@@ -86,6 +107,10 @@ function extraPathDirs () {
     dirs.push('/opt/homebrew/bin', '/usr/local/bin')
   }
   if (process.env.NVM_BIN) dirs.push(process.env.NVM_BIN)
+  if (process.platform === 'win32') {
+    const appdata = process.env.APPDATA || path.join(home, 'AppData', 'Roaming')
+    dirs.push(path.join(appdata, 'npm'))
+  }
   dirs.push(
     path.join(home, '.nvm', 'current', 'bin'),
     path.join(home, 'Library', 'pnpm'),
@@ -97,7 +122,8 @@ function extraPathDirs () {
 
 function prependExtraPath () {
   const extras = extraPathDirs().filter(Boolean).join(path.delimiter)
-  process.env.PATH = `${extras}${path.delimiter}${process.env.PATH || '/usr/bin:/bin'}`
+  const fallback = process.platform === 'win32' ? (process.env.PATH || '') : (process.env.PATH || '/usr/bin:/bin')
+  process.env.PATH = extras ? `${extras}${path.delimiter}${fallback}` : fallback
 }
 
 function startupTimeoutMs () {
@@ -250,10 +276,13 @@ function startDshServer (launch) {
     delete env.ELECTRON_RUN_AS_NODE
   }
 
+  const winCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)
   const proc = spawn(launch.command, launch.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
-    detached: process.platform !== 'win32'
+    detached: process.platform !== 'win32',
+    shell: winCmd,
+    windowsHide: true
   })
   serverProc = proc
 

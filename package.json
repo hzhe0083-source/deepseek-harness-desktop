@@ -49,7 +49,8 @@
         "deb",
         "AppImage"
       ],
-      "icon": "assets/icon.png",
+      "icon": "assets/linux-icons",
+      "executableName": "deepseek-harness-desktop",
       "category": "Development",
       "maintainer": "hzhe0083-source <hzhe0083@gmail.com>",
       "synopsis": "Desktop shell for the local DeepSeek Harness",
