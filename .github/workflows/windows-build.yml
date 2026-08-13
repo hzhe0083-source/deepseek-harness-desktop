@@ -40,10 +40,10 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --no-audit --no-fund
 
-      - name: Install the official DSH runtime
-        run: npm install --global @deepseek-ai/dsh@latest --no-audit --no-fund
+      - name: Run tests
+        run: npm test
 
-      - name: Build the unsigned NSIS installer
+      - name: Build the unsigned thin NSIS installer
         run: npm run dist:win
 
       - name: Verify installer output

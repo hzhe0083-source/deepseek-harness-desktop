@@ -1,0 +1,359 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux-x64:
+    name: Linux x64 desktop and runtime
+    # Build native runtime modules against the oldest glibc baseline we
+    # support. The generated archive is audited below before publication.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate release versions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const pkg = require('./package.json')
+          const lock = require('./package-lock.json')
+          const runtime = require('./runtime/package.json')
+          const runtimeLock = require('./runtime/package-lock.json')
+          const tag = process.env.GITHUB_REF_NAME
+          const versions = [pkg.version, lock.version, lock.packages?.['']?.version]
+          if (versions.some(version => version !== pkg.version)) {
+            throw new Error(`package/package-lock version mismatch: ${versions.join(', ')}`)
+          }
+          if (tag !== `v${pkg.version}`) {
+            throw new Error(`tag ${tag} does not match package version ${pkg.version}`)
+          }
+          const runtimeVersion = pkg.deepseekHarness?.runtimeVersion
+          if (runtime.version !== runtimeVersion || runtimeLock.version !== runtimeVersion || runtimeLock.packages?.['']?.version !== runtimeVersion) {
+            throw new Error('runtime package/package-lock version does not match deepseekHarness.runtimeVersion')
+          }
+          if (runtime.dependencies?.['@deepseek-ai/dsh'] !== runtimeVersion) {
+            throw new Error('runtime dependency does not match deepseekHarness.runtimeVersion')
+          }
+          NODE
+          test "$(node -p 'process.arch')" = x64
+          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+          echo "RUNTIME_VERSION=$(node -p "require('./package.json').deepseekHarness.runtimeVersion")" >> "$GITHUB_ENV"
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run dist:linux
+      - run: npm run build:runtime
+
+      - name: Audit Linux x64 runtime glibc baseline
+        shell: bash
+        run: |
+          runtime="dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz"
+          mkdir runtime-audit
+          tar -xzf "dist/runtime/$runtime" -C runtime-audit
+          highest="$(
+            find runtime-audit -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0 |
+              while IFS= read -r -d '' native; do
+                if file -b "$native" | grep -q ELF; then
+                  readelf --version-info "$native" 2>/dev/null
+                fi
+              done |
+              grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1
+          )"
+          test -n "$highest"
+          test "$highest" = GLIBC_2.2.5 || test "$(printf '%s\n' "$highest" GLIBC_2.35 | sort -V | head -n 1)" = "$highest"
+
+      - name: Stage explicit Linux x64 assets
+        shell: bash
+        run: |
+          app="DeepSeek-Harness-Desktop-${VERSION}-linux-x86_64.AppImage"
+          deb="DeepSeek-Harness-Desktop-${VERSION}-linux-amd64.deb"
+          runtime="dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz"
+          test -f "dist/$app"
+          test -f "dist/$deb"
+          test -f dist/latest-linux.yml
+          test -f "dist/runtime/$runtime"
+          test -f "dist/runtime/$runtime.sha256"
+          grep -Fq "url: $app" dist/latest-linux.yml
+          grep -Fq "path: $app" dist/latest-linux.yml
+          mkdir release-assets
+          cp "dist/$app" release-assets/
+          cp "dist/$deb" release-assets/
+          cp dist/latest-linux.yml release-assets/
+          cp "dist/runtime/$runtime" release-assets/
+          cp "dist/runtime/$runtime.sha256" release-assets/
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 5
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-x64
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  linux-arm64-runtime:
+    name: Linux arm64 runtime
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate release versions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const pkg = require('./package.json')
+          const lock = require('./package-lock.json')
+          const runtime = require('./runtime/package.json')
+          const runtimeLock = require('./runtime/package-lock.json')
+          const tag = process.env.GITHUB_REF_NAME
+          const versions = [pkg.version, lock.version, lock.packages?.['']?.version]
+          if (versions.some(version => version !== pkg.version)) {
+            throw new Error(`package/package-lock version mismatch: ${versions.join(', ')}`)
+          }
+          if (tag !== `v${pkg.version}`) {
+            throw new Error(`tag ${tag} does not match package version ${pkg.version}`)
+          }
+          const runtimeVersion = pkg.deepseekHarness?.runtimeVersion
+          if (runtime.version !== runtimeVersion || runtimeLock.version !== runtimeVersion || runtimeLock.packages?.['']?.version !== runtimeVersion) {
+            throw new Error('runtime package/package-lock version does not match deepseekHarness.runtimeVersion')
+          }
+          if (runtime.dependencies?.['@deepseek-ai/dsh'] !== runtimeVersion) {
+            throw new Error('runtime dependency does not match deepseekHarness.runtimeVersion')
+          }
+          NODE
+          test "$(node -p 'process.arch')" = arm64
+          echo "RUNTIME_VERSION=$(node -p "require('./package.json').deepseekHarness.runtimeVersion")" >> "$GITHUB_ENV"
+
+      - run: npm ci
+      - run: npm run build:runtime
+
+      - name: Audit Linux arm64 runtime glibc baseline
+        shell: bash
+        run: |
+          runtime="dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz"
+          mkdir runtime-audit
+          tar -xzf "dist/runtime/$runtime" -C runtime-audit
+          highest="$(
+            find runtime-audit -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' \) -print0 |
+              while IFS= read -r -d '' native; do
+                if file -b "$native" | grep -q ELF; then
+                  readelf --version-info "$native" 2>/dev/null
+                fi
+              done |
+              grep -oE 'GLIBC_[0-9.]+' | sort -Vu | tail -n 1
+          )"
+          test -n "$highest"
+          test "$highest" = GLIBC_2.2.5 || test "$(printf '%s\n' "$highest" GLIBC_2.35 | sort -V | head -n 1)" = "$highest"
+
+      - name: Stage explicit Linux arm64 assets
+        shell: bash
+        run: |
+          runtime="dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz"
+          test -f "dist/runtime/$runtime"
+          test -f "dist/runtime/$runtime.sha256"
+          mkdir release-assets
+          cp "dist/runtime/$runtime" release-assets/
+          cp "dist/runtime/$runtime.sha256" release-assets/
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 2
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-arm64-runtime
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  macos-arm64:
+    name: macOS arm64 desktop and runtime
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate release versions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const pkg = require('./package.json')
+          const lock = require('./package-lock.json')
+          const runtime = require('./runtime/package.json')
+          const runtimeLock = require('./runtime/package-lock.json')
+          const tag = process.env.GITHUB_REF_NAME
+          const versions = [pkg.version, lock.version, lock.packages?.['']?.version]
+          if (versions.some(version => version !== pkg.version)) {
+            throw new Error(`package/package-lock version mismatch: ${versions.join(', ')}`)
+          }
+          if (tag !== `v${pkg.version}`) {
+            throw new Error(`tag ${tag} does not match package version ${pkg.version}`)
+          }
+          const runtimeVersion = pkg.deepseekHarness?.runtimeVersion
+          if (runtime.version !== runtimeVersion || runtimeLock.version !== runtimeVersion || runtimeLock.packages?.['']?.version !== runtimeVersion) {
+            throw new Error('runtime package/package-lock version does not match deepseekHarness.runtimeVersion')
+          }
+          if (runtime.dependencies?.['@deepseek-ai/dsh'] !== runtimeVersion) {
+            throw new Error('runtime dependency does not match deepseekHarness.runtimeVersion')
+          }
+          NODE
+          test "$(uname -m)" = arm64
+          test "$(node -p 'process.arch')" = arm64
+          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+          echo "RUNTIME_VERSION=$(node -p "require('./package.json').deepseekHarness.runtimeVersion")" >> "$GITHUB_ENV"
+
+      - run: npm ci
+      - run: npm run dist:mac
+      - run: npm run build:runtime
+
+      - name: Stage explicit macOS arm64 assets
+        shell: bash
+        run: |
+          dmg="DeepSeek-Harness-Desktop-${VERSION}-mac-arm64.dmg"
+          runtime="dsh-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz"
+          test -f "dist/$dmg"
+          test -f "dist/runtime/$runtime"
+          test -f "dist/runtime/$runtime.sha256"
+          mkdir release-assets
+          cp "dist/$dmg" release-assets/
+          cp "dist/runtime/$runtime" release-assets/
+          cp "dist/runtime/$runtime.sha256" release-assets/
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq 3
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-macos-arm64
+          path: release-assets/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
+  release:
+    name: Publish GitHub Release
+    needs:
+      - linux-x64
+      - linux-arm64-runtime
+      - macos-arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Validate release versions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const pkg = require('./package.json')
+          const lock = require('./package-lock.json')
+          const runtime = require('./runtime/package.json')
+          const runtimeLock = require('./runtime/package-lock.json')
+          const tag = process.env.GITHUB_REF_NAME
+          const versions = [pkg.version, lock.version, lock.packages?.['']?.version]
+          if (versions.some(version => version !== pkg.version)) {
+            throw new Error(`package/package-lock version mismatch: ${versions.join(', ')}`)
+          }
+          if (tag !== `v${pkg.version}`) {
+            throw new Error(`tag ${tag} does not match package version ${pkg.version}`)
+          }
+          const runtimeVersion = pkg.deepseekHarness?.runtimeVersion
+          if (runtime.version !== runtimeVersion || runtimeLock.version !== runtimeVersion || runtimeLock.packages?.['']?.version !== runtimeVersion) {
+            throw new Error('runtime package/package-lock version does not match deepseekHarness.runtimeVersion')
+          }
+          if (runtime.dependencies?.['@deepseek-ai/dsh'] !== runtimeVersion) {
+            throw new Error('runtime dependency does not match deepseekHarness.runtimeVersion')
+          }
+          NODE
+          echo "VERSION=$(node -p "require('./package.json').version")" >> "$GITHUB_ENV"
+          echo "RUNTIME_VERSION=$(node -p "require('./package.json').deepseekHarness.runtimeVersion")" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify the complete release asset set
+        shell: bash
+        run: |
+          expected=(
+            "DeepSeek-Harness-Desktop-${VERSION}-linux-x86_64.AppImage"
+            "DeepSeek-Harness-Desktop-${VERSION}-linux-amd64.deb"
+            "DeepSeek-Harness-Desktop-${VERSION}-mac-arm64.dmg"
+            "latest-linux.yml"
+            "dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz"
+            "dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz.sha256"
+            "dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz"
+            "dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz.sha256"
+            "dsh-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz"
+            "dsh-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz.sha256"
+          )
+          test "$(find release-assets -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+          for file in "${expected[@]}"; do
+            test -f "release-assets/$file"
+          done
+          grep -Fq "url: DeepSeek-Harness-Desktop-${VERSION}-linux-x86_64.AppImage" release-assets/latest-linux.yml
+          grep -Fq "path: DeepSeek-Harness-Desktop-${VERSION}-linux-x86_64.AppImage" release-assets/latest-linux.yml
+          (
+            cd release-assets
+            sha256sum -c "dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz.sha256"
+            sha256sum -c "dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz.sha256"
+            sha256sum -c "dsh-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz.sha256"
+          )
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          assets=(
+            "release-assets/DeepSeek-Harness-Desktop-${VERSION}-linux-x86_64.AppImage"
+            "release-assets/DeepSeek-Harness-Desktop-${VERSION}-linux-amd64.deb"
+            "release-assets/DeepSeek-Harness-Desktop-${VERSION}-mac-arm64.dmg"
+            "release-assets/latest-linux.yml"
+            "release-assets/dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz"
+            "release-assets/dsh-runtime-${RUNTIME_VERSION}-linux-x64.tar.gz.sha256"
+            "release-assets/dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz"
+            "release-assets/dsh-runtime-${RUNTIME_VERSION}-linux-arm64.tar.gz.sha256"
+            "release-assets/dsh-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz"
+            "release-assets/dsh-runtime-${RUNTIME_VERSION}-darwin-arm64.tar.gz.sha256"
+          )
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+            --verify-tag \
+            --title "DeepSeek Harness Desktop ${VERSION}" \
+            --generate-notes

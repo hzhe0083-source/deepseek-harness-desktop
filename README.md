@@ -1,165 +1,143 @@
 # DeepSeek Harness Desktop
 
-Electron 桌面壳，把 **DeepSeek Harness (DSH)** 的 Web UI 包进一个原生窗口。**从 0.3.0 起安装包自带完整 DSH 运行时（零依赖），从 0.4.0 起 AppImage 支持自动更新到最新版。**
+DeepSeek Harness 的 Electron 桌面端。当前源码版本为 **0.5.0**：Desktop 改为瘦安装包，不再把完整 DSH 运行时塞进安装包；本机没有 `dsh` 时，首次启动才下载固定版本的运行时。
 
-仓库地址：<https://github.com/hzhe0083-source/deepseek-harness-desktop>
+仓库：<https://github.com/hzhe0083-source/deepseek-harness-desktop>
 
-应用本身不重写任何 harness 逻辑：它在本机找一个空闲的 `127.0.0.1` 端口，启动 `dsh web`，等服务真正就绪后再把沙箱化的 `BrowserWindow` 指过去。关闭窗口即停止服务并退出。
+## 下载与安装
 
-## 平台镜像版本
-
-当前应用版本：**0.4.1**
-
-| 镜像 | 版本 | 架构 | 产物 | 状态 |
-| --- | --- | --- | --- | --- |
-| **Linux** | 0.1.0 起，现随 0.4.1 | x64 / 本机 | `.deb` + `.AppImage` | **已有（0.3.0 起内置 DSH;0.4.0 起 AppImage 自动更新）** |
-| **macOS / 苹果镜像** | 0.2.0 起，现随 0.3.1 | Apple Silicon (arm64) | `.app` + `.dmg` | **已有** |
-| Windows | CI 构建 | x64 | `.exe` (NSIS) | GitHub Actions 可生成未签名 artifact，尚未作为正式镜像发布 |
-
-- Linux 镜像：`npm run dist:linux`（`bundle:dsh` 自动先执行）
-- Windows 镜像：`npm run dist:win`（x64 NSIS，`bundle:dsh` 自动先执行）
-- 苹果镜像：`npm run dist:mac`
-  产物名：`DeepSeek Harness Desktop-<版本>-mac-arm64.dmg`
-  以及未打包目录：`dist/mac-arm64/DeepSeek Harness Desktop.app`
-
-GitHub Releases 里请认准版本号与文件名（`v0.4.1`、`mac-arm64` / `.deb` / `.AppImage`）。Intel Mac 不在当前镜像范围内。
-
-图标使用官方 Web UI 的 `FishLogo`（与侧栏 / 欢迎页同一条路径），深色底板、单层圆角，按 Dock 尺寸放大。
-
-## 自动更新（0.4.0+）
-
-- 更新源：GitHub Releases（公开仓库，无需凭据）；electron-updater 读取发布里的 `latest-linux.yml`
-- 行为：启动后约 8 秒后台检查 → 有新版本自动下载 → 下载完成弹窗「立即重启安装 / 稍后」；选择稍后则退出应用时自动安装
-- **仅 AppImage 支持自动更新**（Linux 上 deb 无法自替换）；deb 用户请从 Releases 手动下载新版
-- 更新日志在 `~/.config/DeepSeek Harness Desktop/logs/dsh-server.log`（`[updater]` 前缀）
-
-## 特性
-
-- **自动更新（0.4.0+，AppImage）** —— 后台检查/下载 GitHub Releases 最新版，一键重启安装
-- **开箱即用的内置运行时（0.3.0+）** —— 随包分发完整 DSH（vendor/dsh，含全部依赖与前端产物），在 **Electron 自带的 Node 运行时**上执行（`ELECTRON_RUN_AS_NODE=1`），无需系统 Node / npm / dsh
-- **外部 dsh 仍可用** —— 设 `DSH_BIN` 可强制指向外部安装的 dsh；没有 vendor 的源码构建自动回退到机器上已装的 dsh，最后回退 `npx @deepseek-ai/dsh`
-- **共享同一份数据** —— 会话、设置、preset、skills 全部沿用 `~/.dsh` 里的数据，和浏览器里用的是同一份
-- **自动端口选择** —— 不占用固定端口，和已开着的 `dsh web`（如 3080）互不冲突
-- **启动就绪探测** —— 轮询直到 SPA 真的开始响应才开窗；`dsh` 启动失败/退出会弹出带日志的错误框
-- **单实例锁** —— 重复启动时聚焦已有窗口
-- **安全默认** —— `contextIsolation` + `sandbox` + 无 `nodeIntegration`，外链一律交给系统浏览器
-- **服务生命周期** —— 关窗 → `SIGTERM` 停止 dsh（进程组）→ 退出；3 秒兜底 `SIGKILL`
-- **苹果镜像额外处理** —— 自动带上 Homebrew PATH（`/opt/homebrew/bin`）；macOS 保留原生应用菜单
-
-## 运行时解析顺序
-
-启动时按以下优先级选择如何运行 dsh：
-
-1. `DSH_BIN` 环境变量（显式指定的外部 dsh 启动器）
-2. 内置 `vendor/dsh`（打包版在 `resources/vendor/dsh`），用 `process.execPath` + `--expose-internals` + `ELECTRON_RUN_AS_NODE=1` 在 Electron 的嵌入式 Node 上运行
-3. 机器上已装的 `dsh`（nvm / Homebrew / pnpm / npm-global 常见位置）
-4. `npx --yes @deepseek-ai/dsh`（首次较慢，启动超时放宽到 180 秒）
-
-`--expose-internals` 是 DSH 的 HMR 服务所要求的 V8 标志；DSH 自带的 `node-addon-require-builtin` 兜底在 Electron 的 Node 下不可用，因此显式传入。
-
-## 使用
-
-**终端用户**：从 Release 下载对应平台的镜像，安装即用（0.3.0 起零依赖）。
-
-**源码开发/构建**：
+### Linux x64：一条命令安装
 
 ```sh
-npm install
-npm run bundle:dsh   # 把本机(或 DSH_INSTALL_DIR 指向的)DSH 安装复制进 vendor/dsh
-npm start            # 开发运行(无 vendor 时自动回退到机器 dsh / npx)
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/main/install.sh | sh
 ```
 
-如果 `dsh` 不在 PATH 中（例如用 nvm 安装的），可设置环境变量指向它：
+该命令从 [GitHub Releases 最新正式版](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases/latest) 下载 AppImage、校验 Release 中的 SHA-512、安装到用户目录并启动。无需 `sudo`；再次执行同一命令即可更新或确认已是最新版。
+
+也可以在 [GitHub Releases](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases) 直接下载：
+
+- `DeepSeek-Harness-Desktop-<版本>-linux-x86_64.AppImage`：加执行权限后直接运行；支持应用内自动更新。
+- `DeepSeek-Harness-Desktop-<版本>-linux-amd64.deb`：用 `sudo apt install ./文件名.deb` 安装；deb 版本需要手动下载更新。
+
+### macOS arm64（Apple Silicon）
+
+0.5.0 Release 发布后，从 [GitHub Releases](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases) 下载 `DeepSeek-Harness-Desktop-0.5.0-mac-arm64.dmg`，打开后把应用拖进“应用程序”。
+
+**当前必须等 0.5.0 Release 中出现这个 DMG 资产，才有正式的 0.5.0 macOS 下载包。** 如果 Release 页面还没有它，可以按下方“源码开发与构建”自行构建；Intel Mac 暂无正式安装包。
+
+### npm / npx：一条命令启动（可选）
+
+机器上有 Node.js 18+ 的话，也可以不手动下载安装包：
 
 ```sh
-DSH_BIN=/path/to/dsh npm start
+npx deepseek-harness-desktop
 ```
 
-### 苹果镜像（macOS）
+自动下载并启动最新版（macOS 加 `--install` 安装到「应用程序」；Linux 加 `--deb` 改用 deb）。npm 包本身只有几 KB，真正的安装包仍从 GitHub Releases 下载并缓存到本地。
 
-1. 从 Release `v0.3.1` 下载 `DeepSeek Harness Desktop-0.3.1-mac-arm64.dmg`，或本地构建：
+### 不能用 pip 安装 Desktop
+
+DeepSeek Harness Desktop 是 Electron 应用，**不提供 pip 包**。`pip install deepseek-harness-sdk` 安装的是供 Python 程序调用的 SDK，不是 Desktop，也不会安装桌面界面。
+
+普通用户只需下载 AppImage、deb 或 DMG；不需要安装 Python、Node.js 或 npm。
+
+## 瘦安装包如何工作
+
+启动时按以下顺序选择 DSH：
+
+1. `DSH_BIN` 指定的 `dsh`。
+2. 本机已经安装、可在 PATH、nvm、Homebrew、pnpm 或 npm-global 常见位置找到的 `dsh`。
+3. 已校验并缓存的受管运行时。
+4. 若缓存不存在，从当前 Desktop 版本对应的 GitHub Release 下载固定的 **`@deepseek-ai/dsh@0.1.0-rc.6`** 运行时，校验 SHA-256 后缓存并启动。
+
+因此，本机已有 DSH 时不会重复下载；本机没有 DSH 时只在首次启动联网下载一次，之后可直接使用缓存。升级到绑定了不同 DSH 版本的 Desktop 时，会为新版本建立独立缓存。
+
+默认缓存位置：
+
+- Linux：`~/.config/DeepSeek Harness Desktop/runtime/0.1.0-rc.6/<平台-架构>/`
+- macOS：`~/Library/Application Support/DeepSeek Harness Desktop/runtime/0.1.0-rc.6/darwin-arm64/`
+
+如果首次下载失败，请检查网络能否访问 GitHub Releases 后重启应用。需要强制使用本机安装时，可从终端启动：
 
 ```sh
-npm install
-npm run dist:mac
+DSH_BIN=/absolute/path/to/dsh deepseek-harness-desktop
 ```
 
-2. 打开 dmg，把 **DeepSeek Harness Desktop.app** 拖到「应用程序」，或直接运行：
+`DSH_RUNTIME_URL` 与 `DSH_RUNTIME_SHA256` 仅用于镜像、测试或维护，不是普通安装所必需。
+
+## 支持范围
+
+| 用途 | 平台 / 架构 | 状态 |
+| --- | --- | --- |
+| 正式 Desktop 安装包 | Linux x64、glibc 2.35+（Ubuntu 22.04+） | AppImage + deb |
+| 正式 Desktop 安装包 | macOS arm64 | 0.5.0 DMG 发布后可用 |
+| 受管 DSH 运行时 | Linux x64、Linux arm64、macOS arm64 | 各平台原生构建的独立资产 |
+| Windows / Intel Mac | — | 暂无正式安装包；不会自动下载受管运行时 |
+
+在不支持受管下载的平台上，如果自行构建 Desktop，仍可通过 `DSH_BIN` 或本机安装的 `dsh` 运行。
+
+## 主要特性
+
+- Desktop 安装包只包含桌面壳；DSH 运行时按需下载并复用缓存。
+- 会话、设置、preset 和 skills 继续使用 `~/.dsh`，与浏览器方式共享数据。
+- 自动选择空闲的 `127.0.0.1` 端口，等 Web UI 就绪后再显示窗口。
+- 单实例运行；关闭窗口时终止它启动的 DSH 服务。
+- `contextIsolation`、sandbox、无 `nodeIntegration`；外链由系统浏览器打开。
+
+AppImage 启动后会通过 GitHub Releases 检查 Desktop 更新；下载完成后可以立即重启安装或退出时安装。deb 与 DMG 不走这条自更新链路。
+
+## 源码开发与构建
+
+源码开发需要 Node.js 和 npm；这些依赖只面向开发者，不要求终端用户安装。
 
 ```sh
-open "dist/mac-arm64/DeepSeek Harness Desktop.app"
+npm ci
+npm test
+npm start
 ```
 
-3. 未签名的本地构建，第一次打开若被拦截：系统设置 → 隐私与安全性 → 仍要打开。也可：
+构建瘦 Desktop 安装包：
 
 ```sh
-xattr -cr "DeepSeek Harness Desktop.app"
+npm run dist:linux   # Linux x64：deb + AppImage
+npm run dist:win     # Windows x64：NSIS（瘦 Desktop，未签名）
+npm run dist:mac     # macOS arm64：dmg + 未打包 app
 ```
 
-### Linux 镜像
+Windows CI 位于 `.github/workflows/windows-build.yml`，在 `windows-latest` 上运行测试并生成未签名的 NSIS artifact；Windows 当前没有正式 Release，也不下载受管 DSH 运行时。
+
+构建当前原生平台的独立运行时资产：
 
 ```sh
-npm install
-npm run dist:linux
+npm run build:runtime
 ```
 
-产物在 `dist/`：`.deb` 和 `.AppImage`。
+运行时包含原生依赖，必须在目标平台/架构上构建，不能用一台 x64 Linux 机器代替 Linux arm64 或 macOS arm64。产物写入 `dist/runtime/`，包括 `.tar.gz` 与对应的 `.sha256`。
+
+当前 Release DMG 与本地构建的 macOS 应用都尚未签名、公证。首次打开可能被 Gatekeeper 拦截；请在 Finder 中右键应用选择“打开”，或前往“系统设置 → 隐私与安全性 → 仍要打开”。
+
+## 发版资产与清单
+
+0.5.0 Release 必须同时提供 Desktop 和它会请求的固定运行时；Desktop 默认从同名版本 Release（例如 `v0.5.0`）取运行时。
+
+1. 确认 `package.json` 为 `0.5.0`，`deepseekHarness.runtimeVersion` 与 `runtime/package.json` 都固定为 `0.1.0-rc.6`，tag 使用完全对应的 `v0.5.0`。
+2. 上传 Linux x64 的 AppImage、deb 与 `latest-linux.yml`，以及 macOS arm64 的 `DeepSeek-Harness-Desktop-0.5.0-mac-arm64.dmg`。
+3. 在各自原生 runner 构建并上传 `dsh-runtime-0.1.0-rc.6-{linux-x64,linux-arm64,darwin-arm64}.tar.gz`。
+4. 为每个运行时压缩包上传同名 `.sha256`；资产名不要改动，否则 Desktop 无法按约定 URL 下载。
+5. 发布为正式、非 draft 的 Release，并在干净机器上验证首次下载、第二次缓存启动、离线启动和 AppImage 更新。
 
 ## 工作原理
 
-```
-Electron main ──spawn──> <electron 二进制> --expose-internals vendor/dsh/lib/bin.js
-                             └ web --host 127.0.0.1 --port <free-port>
-                          (ELECTRON_RUN_AS_NODE=1 → 作为 Node 运行)
-     │                        │
-     │  poll GET / until 200  │
-     │<───────────────────────┘
-     │
-BrowserWindow ──loadURL──> http://127.0.0.1:<port>
+```text
+Electron main
+  └─ 解析 DSH_BIN / 本机 dsh / 受管缓存
+       └─ 必要时下载并校验固定版本运行时
+            └─ dsh web --host 127.0.0.1 --port <空闲端口>
+                 └─ 就绪后 BrowserWindow 加载本地 Web UI
 ```
 
-DSH 的服务端对 IP 字面量的 host 天然放行（无 DNS rebinding 风险），Electron 里加载 `http://127.0.0.1:<port>` 与浏览器访问完全等价。
-
-## 打包分发
-
-```sh
-npm run dist:linux   # bundle:dsh + 构建 deb + AppImage(自包含,零依赖)
-npm run dist:win     # bundle:dsh + 构建 Windows x64 NSIS
-npm run dist:mac     # bundle:dsh + 构建 Apple Silicon dmg/dir
-npm run dist         # 按当前平台打包
-```
-
-产物在 `dist/`。`vendor/` 不进 git（体积约 210 MB），由 `scripts/bundle-dsh.mjs` 从本机 DSH 安装生成，并按当前构建平台裁剪其他平台的预编译二进制；Windows 构建会保留 `win32` 原生依赖。
-
-Windows 的 CI 构建由 `.github/workflows/windows-build.yml` 负责，在 `windows-latest` 上安装官方 DSH、生成 x64 NSIS 安装包并上传为 Actions artifact。当前 artifact 未签名，不会自动创建 GitHub Release。
-
-### 发版清单（维护者）
-
-每次发布新版本（保证 AppImage 自动更新链路）：
-
-1. 更新 `package.json` 版本号，跑 `npm run dist:linux`
-2. 在 GitHub 创建同名 tag 的 Release（如 `v0.4.1`），上传：
-   - `dist/DeepSeek Harness Desktop-<版本>.AppImage` —— 资产名必须与 `dist/latest-linux.yml` 里写的**完全一致**（点号分隔：`DeepSeek-Harness-Desktop-<版本>.AppImage`）
-   - `dist/latest-linux.yml`
-   - `dist/deepseek-harness-desktop_<版本>_amd64.deb`（deb 手动安装用，不参与自动更新）
-3. 不要发 draft / prerelease（electron-updater 只认最新的正式 Release）
-
-自动更新的验证开关：`DSH_DESKTOP_AUTOUPDATE_TEST=1 <旧版AppImage>`，下载完成即自动重启安装。
-
-## 故障排查
-
-- **错误框提示启动失败** —— 看错误框里的服务器日志；确认 vendor/dsh 存在（源码构建需先 `npm run bundle:dsh`），或设 `DSH_BIN` 指向外部 dsh
-- **AppImage 报 `dlopen(): error loading libfuse.so.2`** —— 系统缺 FUSE2：`sudo apt install libfuse2`；临时可用 `<AppImage> --appimage-extract-and-run` 直接运行（自动更新的最终重启步骤同样需要 libfuse2）
-- **服务器日志** —— `~/.config/DeepSeek Harness Desktop/logs/dsh-server.log`（Linux；macOS/Windows 在对应的 userData 目录）
-- **开发调试** —— `DSH_DESKTOP_DEV=1 npm start` 会保留默认菜单（可打开 DevTools）
-
-## Roadmap
-
-- [x] 把 DSH（含预构建前端产物）捆绑进 app 资源，做到零依赖分发（0.3.0）
-- [x] 自动更新（electron-updater，GitHub Releases 源，AppImage）（0.4.0）
-- [ ] 托盘图标 / 最小化到托盘、开机自启
-- [x] Windows x64 NSIS CI 打包（未签名、不发布 Release）
-- [ ] Windows 签名与正式发布；macOS 签名公证（mac 的 electron-updater 也待接入）
+服务器日志位于 Electron 的 userData 日志目录；Linux 默认是 `~/.config/DeepSeek Harness Desktop/logs/dsh-server.log`。开发时可用 `DSH_DESKTOP_DEV=1 npm start` 保留默认菜单和 DevTools 入口。
 
 ## License
 

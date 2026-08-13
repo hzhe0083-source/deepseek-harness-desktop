@@ -1,0 +1,28 @@
+{
+  "name": "deepseek-harness-desktop",
+  "version": "0.4.1",
+  "description": "DeepSeek Harness Desktop 启动器：一行命令下载并启动桌面壳，无需手动找安装包",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "deepseek-harness-desktop": "cli.js"
+  },
+  "files": [
+    "cli.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "deepseek",
+    "harness",
+    "desktop",
+    "launcher",
+    "electron"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hzhe0083-source/deepseek-harness-desktop.git"
+  },
+  "homepage": "https://github.com/hzhe0083-source/deepseek-harness-desktop#readme"
+}
