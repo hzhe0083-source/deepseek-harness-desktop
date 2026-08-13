@@ -144,6 +144,20 @@ test('asset naming, cache path, and installed lookup are deterministic', async (
     () => runtimeAssetName({ version: RUNTIME_VERSION, platform: 'win32', arch: 'x64' }),
     /Unsupported DSH runtime target: win32-x64/
   )
+
+  const winHome = path.join(root, 'win-home')
+  const winNpm = path.join(winHome, 'AppData', 'Roaming', 'npm')
+  const winCmd = path.join(winNpm, 'dsh.cmd')
+  await fs.mkdir(winNpm, { recursive: true })
+  await fs.writeFile(winCmd, '@echo off\r\n', { mode: 0o755 })
+  assert.equal(
+    findInstalledDsh({
+      platform: 'win32',
+      homedir: winHome,
+      env: { PATH: '', APPDATA: path.join(winHome, 'AppData', 'Roaming') }
+    }),
+    winCmd
+  )
 })
 
 test('resolution priority is DSH_BIN, installed dsh, then verified cache', async (t) => {

@@ -6,6 +6,11 @@
 - 运行时解析顺序改为 `DSH_BIN` → 本机 `dsh` → 已校验缓存 → 首次下载固定的 `@deepseek-ai/dsh@0.1.0-rc.6`
 - 首次下载校验 SHA-256 并按版本、平台和架构缓存；缓存命中后无需联网，终端用户仍无需 Node.js / npm
 - 新增 Linux x64 一键安装脚本，从 GitHub Releases 下载并校验 AppImage；仍保留 AppImage、deb 与 macOS arm64 DMG 直接下载
+- 一键安装脚本会写入 `~/.local/share/applications` 桌面入口和应用图标；deb/AppImage 改为打包 16–1024 全套 Linux 图标，避免 Ubuntu 应用列表只有名字没有图标
+- Ubuntu 图标启动改为包装脚本：没有 `libfuse.so.2` 时先解包再启动，避免点图标毫无反应
+- 桌面入口关闭 StartupNotify、去掉空的 `%U`，并直接启动解包后的 Electron 二进制，避免 GNOME 误判启动失败
+- `npx deepseek-harness-desktop` 在 Linux 上同样写入应用菜单入口和图标
+- Windows：查找 `%APPDATA%\\npm\\dsh.cmd`，用 `shell` 启动 `.cmd`，并设置 AppUserModelId，避免任务栏图标对不上
 - 新增 Linux x64、Linux arm64、macOS arm64 的原生运行时资产构建流程；每个 `.tar.gz` 同时发布 `.sha256`
 - Linux 与 macOS 统一使用新版启动器安全区图标，并改用 macOS 15 arm64 runner 构建 DMG 与运行时
 - 收紧本地 Web UI 的同源导航与 HTML 就绪检查，避免相似 URL 绕过和错误响应被误判为启动成功

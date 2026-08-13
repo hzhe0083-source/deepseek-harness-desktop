@@ -24,7 +24,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
 const REPO = 'hzhe0083-source/deepseek-harness-desktop'
@@ -225,9 +225,86 @@ function installFromDmg (dmgPath, releaseTag) {
 
 function hasFuse2 () {
   // AppImage 正常模式需要 FUSE2（libfuse.so.2）；Ubuntu 22.04+ 默认不装。
-  // 探测失败（如 ldconfig 不存在）时乐观假设可用，失败时用户可加 --extract-and-run。
   const probe = spawnSync('ldconfig', ['-p'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   return probe.status !== 0 || /libfuse\.so\.2\b/.test(probe.stdout || '')
+}
+
+function quoteSh (value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function isPng (file) {
+  try {
+    const bytes = readFileSync(file)
+    return bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  } catch {
+    return false
+  }
+}
+
+async function installLinuxDesktop (appimage) {
+  const dataHome = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share')
+  const binHome = process.env.XDG_BIN_HOME || join(homedir(), '.local', 'bin')
+  const appDir = join(dataHome, 'deepseek-harness-desktop')
+  const launcher = join(binHome, 'deepseek-harness-desktop')
+  const desktop = join(dataHome, 'applications', 'deepseek-harness-desktop.desktop')
+  const icon = join(appDir, 'deepseek-harness-desktop.png')
+  const log = join(appDir, 'launch.log')
+  mkdirSync(appDir, { recursive: true })
+  mkdirSync(binHome, { recursive: true })
+  mkdirSync(dirname(desktop), { recursive: true })
+
+  writeFileSync(launcher, `#!/bin/sh
+# deepseek-harness-desktop launcher
+appimage=${quoteSh(appimage)}
+log=${quoteSh(log)}
+mkdir -p "$(dirname "$log")"
+if [ -z "\${APPIMAGE_EXTRACT_AND_RUN:-}" ] &&
+   [ ! -e /lib/x86_64-linux-gnu/libfuse.so.2 ] &&
+   [ ! -e /usr/lib/x86_64-linux-gnu/libfuse.so.2 ] &&
+   [ ! -e /lib64/libfuse.so.2 ] &&
+   ! ldconfig -p 2>/dev/null | grep -q 'libfuse\\.so\\.2 '; then
+  APPIMAGE_EXTRACT_AND_RUN=1
+  export APPIMAGE_EXTRACT_AND_RUN
+fi
+echo "\$(date -Iseconds) exec appimage \$appimage" >>"\$log"
+exec "$appimage" >>"$log" 2>&1
+`, { mode: 0o755 })
+
+  if (!isPng(icon)) {
+    const tmp = `${icon}.part`
+    try {
+      const response = await fetch(`https://raw.githubusercontent.com/${REPO}/main/assets/icon.png`, {
+        headers: { 'User-Agent': USER_AGENT }
+      })
+      if (response.ok && response.body) {
+        await pipeline(response.body, createWriteStream(tmp))
+        if (isPng(tmp)) renameSync(tmp, icon)
+        else rmSync(tmp, { force: true })
+      }
+    } catch {
+      rmSync(tmp, { force: true })
+    }
+  }
+
+  const iconKey = isPng(icon) ? icon : 'deepseek-harness-desktop'
+  const execKey = /^[/0-9A-Za-z._-]+$/.test(launcher) ? launcher : `"${launcher}"`
+  writeFileSync(desktop, `[Desktop Entry]
+Name=DeepSeek Harness Desktop
+Comment=Desktop shell for the local DeepSeek Harness
+Exec=${execKey}
+TryExec=${launcher}
+Icon=${iconKey}
+Terminal=false
+Type=Application
+Categories=Development;
+StartupWMClass=deepseek-harness-desktop
+StartupNotify=false
+Keywords=DeepSeek;DSH;Harness;
+`)
+  spawnSync('update-desktop-database', [join(dataHome, 'applications')], { stdio: 'ignore' })
+  console.log(`✓ 已写入 Ubuntu 应用图标：${desktop}`)
+  return launcher
 }
 
 function launchLinux (file) {
@@ -246,13 +323,12 @@ function launchLinux (file) {
 }
 
 function launchWindows (exePath) {
-  if (/portable/i.test(exePath)) {
-    console.log('启动 Windows portable 版…')
-    spawnDetached(exePath)
-    return
-  }
-  console.log('运行 Windows 安装向导…（安装完成后从开始菜单或桌面启动）')
-  spawnDetached(exePath)
+  const portable = /portable/i.test(exePath)
+  console.log(portable
+    ? '启动 Windows portable 版…'
+    : '运行 Windows 安装向导…（安装完成后从开始菜单或桌面启动）')
+  // Hide the console flash for portable; the NSIS wizard must stay visible.
+  spawnDetached(exePath, [], { windowsHide: portable })
 }
 
 function cachedInfo () {
@@ -339,7 +415,14 @@ async function main () {
       console.log(`安装：sudo apt install "${file}"`)
       process.exit(0)
     }
-    launchLinux(file)
+    try {
+      const launcher = await installLinuxDesktop(file)
+      console.log('启动桌面应用…')
+      spawnDetached(launcher)
+    } catch (error) {
+      console.error(`写入应用图标失败：${error && error.message ? error.message : error}，改为直接启动 AppImage。`)
+      launchLinux(file)
+    }
   } else if (PLATFORM === 'win32') {
     launchWindows(file)
   }

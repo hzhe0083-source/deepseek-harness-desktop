@@ -60,10 +60,14 @@ function findInstalledDsh (options = {}) {
   const homedir = options.homedir || env.HOME || env.USERPROFILE || os.homedir()
   const candidates = []
 
+  const names = platform === 'win32' ? ['dsh.cmd', 'dsh.exe', 'dsh'] : ['dsh']
   for (const dir of String(env.PATH || '').split(path.delimiter)) {
-    if (dir) candidates.push(path.join(dir, 'dsh'))
+    if (!dir) continue
+    for (const name of names) candidates.push(path.join(dir, name))
   }
-  if (env.NVM_BIN) candidates.push(path.join(env.NVM_BIN, 'dsh'))
+  if (env.NVM_BIN) {
+    for (const name of names) candidates.push(path.join(env.NVM_BIN, name))
+  }
   if (platform === 'darwin') {
     candidates.push('/opt/homebrew/bin/dsh', '/usr/local/bin/dsh')
   }
@@ -75,6 +79,14 @@ function findInstalledDsh (options = {}) {
       path.join(homedir, '.local', 'share', 'pnpm', 'dsh'),
       path.join(homedir, '.npm-global', 'bin', 'dsh')
     )
+    if (platform === 'win32') {
+      const appdata = env.APPDATA || path.join(homedir, 'AppData', 'Roaming')
+      candidates.push(
+        path.join(appdata, 'npm', 'dsh.cmd'),
+        path.join(appdata, 'npm', 'dsh.exe'),
+        path.join(appdata, 'npm', 'dsh')
+      )
+    }
 
     const nvmVersions = path.join(homedir, '.nvm', 'versions', 'node')
     try {

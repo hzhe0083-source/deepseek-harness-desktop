@@ -13,11 +13,11 @@ curl --proto '=https' --tlsv1.2 -fsSL \
   https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/main/install.sh | sh
 ```
 
-该命令从 [GitHub Releases 最新正式版](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases/latest) 下载 AppImage、校验 Release 中的 SHA-512、安装到用户目录并启动。无需 `sudo`；再次执行同一命令即可更新或确认已是最新版。
+该命令从 [GitHub Releases 最新正式版](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases/latest) 下载 AppImage、校验 Release 中的 SHA-512、安装到用户目录并启动，同时写入 Ubuntu 应用菜单入口和图标。无需 `sudo`；再次执行同一命令即可更新或补装应用图标。
 
 也可以在 [GitHub Releases](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases) 直接下载：
 
-- `DeepSeek-Harness-Desktop-<版本>-linux-x86_64.AppImage`：加执行权限后直接运行；支持应用内自动更新。
+- `DeepSeek-Harness-Desktop-<版本>-linux-x86_64.AppImage`：加执行权限后直接运行；支持应用内自动更新。单独下载 AppImage 不会出现在 Ubuntu 应用列表里，需要应用图标时请改用上面的 `install.sh`。Ubuntu 22.04+ 若未安装 `libfuse2`，请不要双击 AppImage，用 `install.sh` 生成的应用图标启动（脚本会自动解包）。
 - `DeepSeek-Harness-Desktop-<版本>-linux-amd64.deb`：用 `sudo apt install ./文件名.deb` 安装；deb 版本需要手动下载更新。
 
 ### macOS arm64（Apple Silicon）
@@ -37,7 +37,7 @@ npx deepseek-harness-desktop
 自动下载并启动最新版，三平台无感：
 
 - macOS：挂载 dmg 并启动（加 `--install` 装进「应用程序」）
-- Linux：直接运行 AppImage（缺 FUSE2 时自动改用 extract-and-run）
+- Linux：下载 AppImage、写入 Ubuntu 应用菜单图标，并启动；缺 FUSE2 时自动解包，不必再双击 AppImage
 - Windows：直接运行 portable 版（免安装）
 
 npm 包本身只有几 KB，真正的安装包仍从 GitHub Releases 下载并缓存到本地。
@@ -78,10 +78,11 @@ DSH_BIN=/absolute/path/to/dsh deepseek-harness-desktop
 | --- | --- | --- |
 | 正式 Desktop 安装包 | Linux x64、glibc 2.35+（Ubuntu 22.04+） | AppImage + deb |
 | 正式 Desktop 安装包 | macOS arm64 | 0.5.0 DMG 发布后可用 |
+| 正式 Desktop 安装包 | Windows x64 | NSIS + portable；未签名，无受管运行时 |
 | 受管 DSH 运行时 | Linux x64、Linux arm64、macOS arm64 | 各平台原生构建的独立资产 |
-| Windows / Intel Mac | — | 暂无正式安装包；不会自动下载受管运行时 |
+| Intel Mac | — | 暂无正式安装包 |
 
-在不支持受管下载的平台上，如果自行构建 Desktop，仍可通过 `DSH_BIN` 或本机安装的 `dsh` 运行。
+Windows 安装包不会自动下载 DSH。请先安装 `@deepseek-ai/dsh`（或设置 `DSH_BIN` 指向 `dsh.cmd`），再打开 Desktop。GUI 启动时会查找 `%APPDATA%\\npm\\dsh.cmd`。
 
 ## 主要特性
 
@@ -111,7 +112,7 @@ npm run dist:win     # Windows x64：NSIS（瘦 Desktop，未签名）
 npm run dist:mac     # macOS arm64：dmg + 未打包 app
 ```
 
-Windows CI 位于 `.github/workflows/windows-build.yml`，在 `windows-latest` 上运行测试并生成未签名的 NSIS artifact；Windows 当前没有正式 Release，也不下载受管 DSH 运行时。
+Windows CI 位于 `.github/workflows/windows-build.yml`，在 `windows-latest` 上跑测试并生成未签名的 NSIS / portable。发版工作流会把这两个 exe 挂到 GitHub Release；Windows 仍不下载受管 DSH 运行时。
 
 构建当前原生平台的独立运行时资产：
 
