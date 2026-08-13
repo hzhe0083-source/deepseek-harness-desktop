@@ -62,7 +62,7 @@ npm run dist         # 按当前平台打包(win: nsis, mac: dmg)
 ## 故障排查
 
 - **错误框提示找不到 dsh** —— 用 `DSH_BIN` 环境变量指向 dsh 启动器,或 `npm i -g @deepseek-ai/dsh`
-- **服务器日志** —— `~/.config/deepseek-harness-desktop/logs/dsh-server.log`(Linux;macOS/Windows 在对应的 userData 目录)
+- **服务器日志** —— `~/.config/DeepSeek Harness Desktop/logs/dsh-server.log`(Linux;macOS/Windows 在对应的 userData 目录)
 - **开发调试** —— `DSH_DESKTOP_DEV=1 npm start` 会保留默认菜单(可打开 DevTools)
 
 ## Roadmap
