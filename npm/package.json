@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-desktop",
-  "version": "0.5.0",
+  "version": "0.4.1",
   "description": "DeepSeek Harness Desktop 启动器：一行命令下载并启动桌面壳，无需手动找安装包",
   "license": "MIT",
   "type": "module",
