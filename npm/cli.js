@@ -153,6 +153,16 @@ async function download (asset, dest) {
   return actual
 }
 
+function spawnDetached (command, args = [], options = {}) {
+  const child = spawn(command, args, { detached: true, stdio: 'ignore', ...options })
+  child.on('error', (error) => {
+    console.error(`✖ 启动失败（${command}）：${error.message}`)
+    process.exit(1)
+  })
+  child.unref()
+  return child
+}
+
 function launchMacApp (appPath) {
   const appName = basename(appPath)
   if (process.argv.includes('--install')) {
@@ -161,12 +171,12 @@ function launchMacApp (appPath) {
     const result = spawnSync('ditto', [appPath, installed], { stdio: 'inherit' })
     if (result.status === 0) {
       console.log(`✓ 已安装：${installed}`)
-      spawn('open', [installed], { stdio: 'ignore' }).unref()
+      spawnDetached('open', [installed])
       return
     }
     console.error(`安装失败（退出码 ${result.status}），改为直接运行已解压的应用。`)
   }
-  spawn('open', [appPath], { stdio: 'ignore' }).unref()
+  spawnDetached('open', [appPath])
   console.log(`✓ 已启动 ${appName}`)
 }
 
@@ -198,13 +208,11 @@ function launchLinux (file) {
     env.APPIMAGE_EXTRACT_AND_RUN = '1'
   }
   console.log('启动 AppImage…（若报 libfuse.so.2 缺失：sudo apt install libfuse2，或用 --extract-and-run）')
-  const child = spawn(file, [], { detached: true, stdio: 'ignore', env })
-  child.unref()
+  spawnDetached(file, [], { env })
 }
 
 function launchWindows (exePath) {
-  const child = spawn(exePath, [], { detached: true, stdio: 'ignore' })
-  child.unref()
+  spawnDetached(exePath)
 }
 
 function cachedInfo () {
