@@ -8,6 +8,11 @@
 - Linux 产物：`deepseek-harness-desktop_0.3.0_amd64.deb` + `DeepSeek Harness Desktop-0.3.0.AppImage`（自包含）
 - 进程组级关停（`process.kill(-pid)`）沿用自 0.2.0
 
+## 0.2.1 — 图标圆角与尺寸
+
+- 官方鲸鱼标改为圆角底板，四周留白，适配 Dock / 桌面 / 多尺寸导出
+- 产物：`DeepSeek Harness Desktop-0.2.1-mac-arm64.dmg`
+
 ## 0.2.0 — 苹果镜像
 
 - 新增 **macOS / 苹果镜像**（Apple Silicon arm64）：`.app` + `.dmg`
