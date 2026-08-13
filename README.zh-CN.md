@@ -28,3 +28,9 @@ irm https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/m
 - Windows：运行 portable 版（免安装）
 
 npm 包只有几 KB，真正的安装包从 GitHub Releases 下载并缓存到本地。再次执行同一命令即可检查更新。
+
+## 应用截图
+
+| macOS | Linux |
+| --- | --- |
+| <img src="assets/screenshots/macos.jpg" alt="DeepSeek Harness Desktop on macOS" width="100%"> | <img src="assets/screenshots/linux.png" alt="DeepSeek Harness Desktop on Linux" width="100%"> |

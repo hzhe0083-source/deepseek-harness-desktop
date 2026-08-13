@@ -28,3 +28,9 @@ irm https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/m
 - Windows: runs the portable build (no installer)
 
 The npm package is only a few KB. The real app is downloaded from GitHub Releases and cached locally. Run the same command again to check for updates.
+
+## Screenshots
+
+| macOS | Linux |
+| --- | --- |
+| <img src="assets/screenshots/macos.jpg" alt="DeepSeek Harness Desktop on macOS" width="100%"> | <img src="assets/screenshots/linux.png" alt="DeepSeek Harness Desktop on Linux" width="100%"> |
