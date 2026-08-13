@@ -10,6 +10,7 @@
 - Ubuntu 图标启动改为包装脚本：没有 `libfuse.so.2` 时先解包再启动，避免点图标毫无反应
 - 桌面入口关闭 StartupNotify、去掉空的 `%U`，并直接启动解包后的 Electron 二进制，避免 GNOME 误判启动失败
 - `npx deepseek-harness-desktop` 在 Linux 上同样写入应用菜单入口和图标
+- 启动前检查 Node.js 18+；缺失或过旧时 `setup.sh` / `setup.ps1` 会下载官方 LTS 到用户目录（不覆盖系统 Node）再启动
 - Windows：查找 `%APPDATA%\\npm\\dsh.cmd`，用 `shell` 启动 `.cmd`，并设置 AppUserModelId，避免任务栏图标对不上
 - 新增 Linux x64、Linux arm64、macOS arm64 的原生运行时资产构建流程；每个 `.tar.gz` 同时发布 `.sha256`
 - Linux 与 macOS 统一使用新版启动器安全区图标，并改用 macOS 15 arm64 runner 构建 DMG 与运行时

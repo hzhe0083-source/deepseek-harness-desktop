@@ -18,6 +18,14 @@ function pngSize (file) {
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
 }
 
+test('setup.sh --check reports a usable Node.js 18+ environment', () => {
+  const setup = path.join(root, 'setup.sh')
+  const result = spawnSync('sh', [setup, '--check'], { encoding: 'utf8' })
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /Node\.js v?\d+/)
+  assert.match(result.stdout, /OK/)
+})
+
 test('electron-builder ships a multi-size Linux icon set', () => {
   assert.equal(packageJson.build.linux.icon, 'assets/linux-icons')
   assert.equal(packageJson.desktopName, 'deepseek-harness-desktop.desktop')

@@ -354,7 +354,18 @@ function checkMode (release, asset) {
   }
 }
 
+function assertNodeVersion () {
+  const major = Number(String(process.versions.node || '0').split('.')[0])
+  if (Number.isFinite(major) && major >= 18) return
+  fail(
+    `Need Node.js 18+ (found ${process.versions.node || 'unknown'}). ` +
+    'On macOS/Linux run: curl --proto \'=https\' --tlsv1.2 -fsSL ' +
+    `https://raw.githubusercontent.com/${REPO}/main/setup.sh | sh`
+  )
+}
+
 async function main () {
+  assertNodeVersion()
   const args = process.argv.slice(2)
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(USAGE)

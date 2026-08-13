@@ -4,13 +4,24 @@
 
 ## Download and install
 
-Requires Node.js 18+. In a terminal, run:
+In a terminal, run:
 
 ```sh
 npx deepseek-harness-desktop
 ```
 
-This downloads and starts the latest desktop app, and also registers a system app icon so you can open it from the application menu later:
+This first checks for Node.js 18+. If Node is missing or too old, download a local LTS copy (it does not replace your system Node) and start the app:
+
+```sh
+# macOS / Linux
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/main/setup.sh | sh
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/main/setup.ps1 | iex
+```
+
+`npx` then downloads and starts the latest desktop app, and registers a system app icon so you can open it from the application menu later:
 
 - macOS: mounts the dmg and launches it (add `--install` to copy it into Applications)
 - Linux: downloads the AppImage, writes an Ubuntu application-menu icon, and launches it; extracts automatically if libfuse2 is missing
