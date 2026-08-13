@@ -1,8 +1,8 @@
 {
   "name": "deepseek-harness-desktop",
   "productName": "DeepSeek Harness Desktop",
-  "version": "0.1.0",
-  "description": "Electron desktop shell for the local DeepSeek Harness (DSH): spawns the local `dsh web` server and wraps its browser UI in a native window.",
+  "version": "0.2.0",
+  "description": "Electron desktop shell for the local DeepSeek Harness (DSH): Linux and macOS images that spawn `dsh web` and wrap its browser UI in a native window.",
   "main": "main/main.js",
   "author": "hzhe0083-source <hzhe0083@gmail.com>",
   "license": "MIT",
@@ -10,11 +10,13 @@
     "start": "electron .",
     "dist": "electron-builder",
     "dist:dir": "electron-builder --dir",
-    "dist:linux": "electron-builder --linux deb AppImage"
+    "dist:linux": "electron-builder --linux deb AppImage",
+    "dist:mac": "electron-builder --mac dmg dir --arm64 --publish never",
+    "dist:mac:dir": "electron-builder --mac dir --arm64 --publish never"
   },
   "devDependencies": {
-    "electron": "^41.0.3",
-    "electron-builder": "^26.0.12"
+    "electron": "41.10.5",
+    "electron-builder": "26.15.3"
   },
   "build": {
     "appId": "com.hzhe0083.deepseek-harness-desktop",
@@ -46,10 +48,28 @@
     },
     "mac": {
       "target": [
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
       "icon": "assets/icon.png",
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "DeepSeek Harness Desktop ${version}",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,

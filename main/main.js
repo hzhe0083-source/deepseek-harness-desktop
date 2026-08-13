@@ -15,7 +15,6 @@ const path = require('node:path')
 const fs = require('node:fs')
 
 const DSH_HOST = '127.0.0.1'
-const STARTUP_TIMEOUT_MS = 60_000
 const READY_POLL_MS = 250
 const MAX_PORT_ATTEMPTS = 3
 
@@ -27,6 +26,7 @@ let quitting = false
 let logStream = null
 let logPath = null
 let serverLogTail = []
+let launchLabel = 'dsh'
 
 // ---------------------------------------------------------------------------
 // Small utilities
@@ -59,33 +59,43 @@ function ensureLogStream () {
   logStream = fs.createWriteStream(logPath, { flags: 'a' })
 }
 
-// Resolve the `dsh` launcher. Explicit DSH_BIN wins; otherwise we look for
-// `dsh` on PATH and in the common nvm / npm-global locations, because a
-// packaged app does not inherit the shell profile PATH.
-function resolveDshCommand () {
-  if (process.env.DSH_BIN) return process.env.DSH_BIN
-  const candidates = [
-    'dsh',
-    ...(process.env.NVM_BIN ? [path.join(process.env.NVM_BIN, 'dsh')] : []),
-    path.join(osHome(), '.nvm', 'current', 'bin', 'dsh'),
-    path.join(osHome(), '.nvm', 'versions', 'node', '*', 'bin', 'dsh')
-  ]
-  for (const candidate of candidates) {
-    const expanded = expandGlob(candidate)
-    for (const resolved of expanded) {
-      try {
-        fs.accessSync(resolved, fs.constants.X_OK)
-        return resolved
-      } catch {
-        // keep looking
-      }
-    }
-  }
-  return 'dsh' // let spawn fail with a clear ENOENT message
-}
-
 function osHome () {
   return process.env.HOME || process.env.USERPROFILE || ''
+}
+
+function extraPathDirs () {
+  const home = osHome()
+  const dirs = []
+  if (process.platform === 'darwin') {
+    dirs.push('/opt/homebrew/bin', '/usr/local/bin')
+  }
+  if (process.env.NVM_BIN) dirs.push(process.env.NVM_BIN)
+  dirs.push(
+    path.join(home, '.nvm', 'current', 'bin'),
+    path.join(home, 'Library', 'pnpm'),
+    path.join(home, '.local', 'share', 'pnpm'),
+    path.join(home, '.npm-global', 'bin')
+  )
+  return dirs
+}
+
+function prependExtraPath () {
+  const extras = extraPathDirs().filter(Boolean).join(path.delimiter)
+  process.env.PATH = `${extras}${path.delimiter}${process.env.PATH || '/usr/bin:/bin'}`
+}
+
+function which (name) {
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue
+    const candidate = path.join(dir, name)
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK)
+      return candidate
+    } catch {
+      // keep looking
+    }
+  }
+  return null
 }
 
 function expandGlob (pattern) {
@@ -106,19 +116,68 @@ function expandGlob (pattern) {
     .map((entry) => base + entry + suffix)
 }
 
+function findInstalledDsh () {
+  const candidates = [
+    ...(process.env.NVM_BIN ? [path.join(process.env.NVM_BIN, 'dsh')] : []),
+    path.join(osHome(), '.nvm', 'current', 'bin', 'dsh'),
+    path.join(osHome(), '.nvm', 'versions', 'node', '*', 'bin', 'dsh'),
+    path.join(osHome(), 'Desktop', 'deepseek-harness', 'node_modules', '.bin', 'dsh')
+  ]
+  for (const candidate of candidates) {
+    for (const resolved of expandGlob(candidate)) {
+      try {
+        fs.accessSync(resolved, fs.constants.X_OK)
+        return resolved
+      } catch {
+        // keep looking
+      }
+    }
+  }
+  return which('dsh')
+}
+
+// Resolve the `dsh` launcher. Explicit DSH_BIN wins; otherwise we look for
+// `dsh` on PATH and in the common nvm / Homebrew / npm-global locations,
+// because a packaged app does not inherit the shell profile PATH.
+// On Apple / Linux machines without a global install, fall back to npx.
+function resolveDshLaunch (port) {
+  const webArgs = ['web', '--host', DSH_HOST, '--port', String(port)]
+  if (process.env.DSH_BIN) {
+    return { command: process.env.DSH_BIN, args: webArgs, label: process.env.DSH_BIN, viaNpx: false }
+  }
+  const installed = findInstalledDsh()
+  if (installed) {
+    return { command: installed, args: webArgs, label: installed, viaNpx: false }
+  }
+  const npx = which('npx')
+  if (npx) {
+    return {
+      command: npx,
+      args: ['--yes', '@deepseek-ai/dsh', ...webArgs],
+      label: 'npx @deepseek-ai/dsh',
+      viaNpx: true
+    }
+  }
+  return { command: 'dsh', args: webArgs, label: 'dsh', viaNpx: false }
+}
+
+function startupTimeoutMs (viaNpx) {
+  if (process.env.DSH_STARTUP_TIMEOUT_MS) return Number(process.env.DSH_STARTUP_TIMEOUT_MS)
+  return viaNpx ? 180_000 : 60_000
+}
+
 // ---------------------------------------------------------------------------
 // DSH server lifecycle
 // ---------------------------------------------------------------------------
 
-function startDshServer (port) {
-  const command = resolveDshCommand()
-  const args = ['web', '--host', DSH_HOST, '--port', String(port)]
+function startDshServer (launch) {
   const env = { ...process.env }
   delete env.ELECTRON_RUN_AS_NODE
 
-  serverProc = spawn(command, args, {
+  serverProc = spawn(launch.command, launch.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env
+    env,
+    detached: process.platform !== 'win32'
   })
 
   serverProc.stdout.on('data', appendLog)
@@ -149,13 +208,15 @@ function shutdownServer () {
   const proc = serverProc
   serverProc = null
   try {
-    proc.kill('SIGTERM')
+    if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGTERM')
+    else proc.kill('SIGTERM')
   } catch {
-    // already gone
+    try { proc.kill('SIGTERM') } catch { /* already gone */ }
   }
   const killer = setTimeout(() => {
     try {
-      proc.kill('SIGKILL')
+      if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL')
+      else proc.kill('SIGKILL')
     } catch {
       // already gone
     }
@@ -206,7 +267,7 @@ function createMainWindow () {
     minHeight: 640,
     show: false,
     title: 'DeepSeek Harness',
-    autoHideMenuBar: true,
+    autoHideMenuBar: process.platform !== 'darwin',
     backgroundColor: '#0e1116',
     icon: path.join(__dirname, '..', 'assets', 'icon.png'),
     webPreferences: {
@@ -238,22 +299,38 @@ function createMainWindow () {
   mainWindow.loadURL(serverUrl)
 }
 
+function installMenu () {
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { role: 'appMenu' },
+      { role: 'editMenu' },
+      { role: 'viewMenu' },
+      { role: 'windowMenu' }
+    ]))
+    return
+  }
+  if (!process.env.DSH_DESKTOP_DEV) Menu.setApplicationMenu(null)
+}
+
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
 async function boot () {
+  prependExtraPath()
   ensureLogStream()
-  appendLog(`--- boot: resolving dsh via ${resolveDshCommand()} ---\n`)
 
   let lastError = null
   for (let attempt = 1; attempt <= MAX_PORT_ATTEMPTS; attempt++) {
     serverPort = await findFreePort()
     serverUrl = `http://${DSH_HOST}:${serverPort}`
-    appendLog(`attempt ${attempt}: starting dsh web on ${serverUrl}\n`)
-    startDshServer(serverPort)
+    const launch = resolveDshLaunch(serverPort)
+    launchLabel = launch.label
+    const timeoutMs = startupTimeoutMs(launch.viaNpx)
+    appendLog(`--- boot attempt ${attempt}: ${launch.label} on ${serverUrl} ---\n`)
+    startDshServer(launch)
     try {
-      await waitForServer(serverUrl, STARTUP_TIMEOUT_MS)
+      await waitForServer(serverUrl, timeoutMs)
       lastError = null
       break
     } catch (err) {
@@ -267,8 +344,9 @@ async function boot () {
     dialog.showErrorBox(
       'DeepSeek Harness failed to start',
       `${lastError.message}\n\n` +
-        `Command tried: ${resolveDshCommand()} web --host ${DSH_HOST} --port <port>\n` +
-        `Tip: install the harness with \`npm i -g @deepseek-ai/dsh\` or point DSH_BIN at the dsh launcher.\n\n` +
+        `Command tried: ${launchLabel} web --host ${DSH_HOST} --port <port>\n` +
+        `Tip: install the harness with \`npm i -g @deepseek-ai/dsh\` or point DSH_BIN at the dsh launcher.\n` +
+        `On macOS, Homebrew Node is detected from /opt/homebrew/bin.\n\n` +
         `Server log: ${logPath}\n${serverLogTail.join('')}`
     )
     app.quit()
@@ -296,8 +374,7 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
-    // Keep the default menu only while developing (needed for DevTools).
-    if (!process.env.DSH_DESKTOP_DEV) Menu.setApplicationMenu(null)
+    installMenu()
     boot().catch((err) => {
       dialog.showErrorBox('DeepSeek Harness Desktop failed to boot', String(err && err.stack ? err.stack : err))
       app.quit()
