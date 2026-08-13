@@ -145,6 +145,7 @@ npm run dist         # 同上,按当前平台打包(win: nsis)
 ## 故障排查
 
 - **错误框提示启动失败** —— 看错误框里的服务器日志；确认 vendor/dsh 存在（源码构建需先 `npm run bundle:dsh`），或设 `DSH_BIN` 指向外部 dsh
+- **AppImage 报 `dlopen(): error loading libfuse.so.2`** —— 系统缺 FUSE2：`sudo apt install libfuse2`；临时可用 `<AppImage> --appimage-extract-and-run` 直接运行（自动更新的最终重启步骤同样需要 libfuse2）
 - **服务器日志** —— `~/.config/DeepSeek Harness Desktop/logs/dsh-server.log`（Linux；macOS/Windows 在对应的 userData 目录）
 - **开发调试** —— `DSH_DESKTOP_DEV=1 npm start` 会保留默认菜单（可打开 DevTools）
 
