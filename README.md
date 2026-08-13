@@ -14,9 +14,10 @@ Electron 桌面壳，把 **DeepSeek Harness (DSH)** 的 Web UI 包进一个原�
 | --- | --- | --- | --- | --- |
 | **Linux** | 0.1.0 起，现随 0.4.1 | x64 / 本机 | `.deb` + `.AppImage` | **已有（0.3.0 起内置 DSH;0.4.0 起 AppImage 自动更新）** |
 | **macOS / 苹果镜像** | 0.2.0 起，现随 0.3.1 | Apple Silicon (arm64) | `.app` + `.dmg` | **已有** |
-| Windows | — | x64 | `.exe` (NSIS) | 配置已预留，尚未作为正式镜像发布 |
+| Windows | CI 构建 | x64 | `.exe` (NSIS) | GitHub Actions 可生成未签名 artifact，尚未作为正式镜像发布 |
 
 - Linux 镜像：`npm run dist:linux`（`bundle:dsh` 自动先执行）
+- Windows 镜像：`npm run dist:win`（x64 NSIS，`bundle:dsh` 自动先执行）
 - 苹果镜像：`npm run dist:mac`
   产物名：`DeepSeek Harness Desktop-<版本>-mac-arm64.dmg`
   以及未打包目录：`dist/mac-arm64/DeepSeek Harness Desktop.app`
@@ -123,11 +124,14 @@ DSH 的服务端对 IP 字面量的 host 天然放行（无 DNS rebinding 风险
 
 ```sh
 npm run dist:linux   # bundle:dsh + 构建 deb + AppImage(自包含,零依赖)
+npm run dist:win     # bundle:dsh + 构建 Windows x64 NSIS
 npm run dist:mac     # bundle:dsh + 构建 Apple Silicon dmg/dir
-npm run dist         # 同上,按当前平台打包(win: nsis)
+npm run dist         # 按当前平台打包
 ```
 
-产物在 `dist/`。`vendor/` 不进 git（体积约 210 MB），由 `scripts/bundle-dsh.mjs` 从本机 DSH 安装生成，并自动裁剪其他平台的预编译二进制（win32/darwin/musl 等）。
+产物在 `dist/`。`vendor/` 不进 git（体积约 210 MB），由 `scripts/bundle-dsh.mjs` 从本机 DSH 安装生成，并按当前构建平台裁剪其他平台的预编译二进制；Windows 构建会保留 `win32` 原生依赖。
+
+Windows 的 CI 构建由 `.github/workflows/windows-build.yml` 负责，在 `windows-latest` 上安装官方 DSH、生成 x64 NSIS 安装包并上传为 Actions artifact。当前 artifact 未签名，不会自动创建 GitHub Release。
 
 ### 发版清单（维护者）
 
@@ -154,8 +158,8 @@ npm run dist         # 同上,按当前平台打包(win: nsis)
 - [x] 把 DSH（含预构建前端产物）捆绑进 app 资源，做到零依赖分发（0.3.0）
 - [x] 自动更新（electron-updater，GitHub Releases 源，AppImage）（0.4.0）
 - [ ] 托盘图标 / 最小化到托盘、开机自启
-- [ ] Windows 打包与签名验证；macOS 签名公证（mac 的 electron-updater 也待接入）
-- [ ] 捆绑脚本目前按 linux-x64 裁剪，其他平台构建需相应调整
+- [x] Windows x64 NSIS CI 打包（未签名、不发布 Release）
+- [ ] Windows 签名与正式发布；macOS 签名公证（mac 的 electron-updater 也待接入）
 
 ## License
 

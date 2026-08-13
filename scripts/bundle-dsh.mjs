@@ -18,12 +18,16 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const outDir = join(root, 'vendor', 'dsh')
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 
 function findCandidates () {
   const found = []
   if (process.env.DSH_INSTALL_DIR) found.push(process.env.DSH_INSTALL_DIR)
   try {
-    const g = spawnSync('npm', ['root', '-g'], { encoding: 'utf8' })
+    const npmInvocation = process.platform === 'win32'
+      ? [process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `${npmCommand} root -g`]]
+      : [npmCommand, ['root', '-g']]
+    const g = spawnSync(npmInvocation[0], npmInvocation[1], { encoding: 'utf8' })
     if (g.status === 0) found.push(join(g.stdout.trim(), '@deepseek-ai', 'dsh'))
   } catch {}
   const nvmBase = join(homedir(), '.nvm', 'versions', 'node')
@@ -58,19 +62,30 @@ console.log(`copying ${source} -> ${outDir}`)
 cpSync(source, outDir, {
   recursive: true,
   dereference: false,
-  filter: (src) => !/node_modules\/\.bin($|\/)/.test(src)
+  filter: (src) => !/node_modules[\\/]\.bin($|[\\/])/.test(src)
 })
 
 // --- trim other-platform binaries -------------------------------------------
 const trims = [
-  ['node_modules', 'node-pty', 'prebuilds', 'win32-x64'],
-  ['node_modules', 'node-pty', 'prebuilds', 'win32-arm64'],
-  ['node_modules', 'node-pty', 'prebuilds', 'darwin-x64'],
-  ['node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'],
-  ['node_modules', '@img', 'sharp-linuxmusl-x64'],
-  ['node_modules', '@img', 'sharp-libvips-linuxmusl-x64'],
-  ['node_modules', '@img', 'sharp-wasm32']
+  ...(process.platform === 'win32'
+    ? [
+        ['node_modules', 'node-pty', 'prebuilds', 'darwin-x64'],
+        ['node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'],
+        ['node_modules', '@img', 'sharp-linuxmusl-x64'],
+        ['node_modules', '@img', 'sharp-libvips-linuxmusl-x64'],
+        ['node_modules', '@img', 'sharp-wasm32']
+      ]
+    : [
+        ['node_modules', 'node-pty', 'prebuilds', 'win32-x64'],
+        ['node_modules', 'node-pty', 'prebuilds', 'win32-arm64'],
+        ['node_modules', 'node-pty', 'prebuilds', 'darwin-x64'],
+        ['node_modules', 'node-pty', 'prebuilds', 'darwin-arm64'],
+        ['node_modules', '@img', 'sharp-linuxmusl-x64'],
+        ['node_modules', '@img', 'sharp-libvips-linuxmusl-x64'],
+        ['node_modules', '@img', 'sharp-wasm32']
+      ])
 ]
+
 for (const parts of trims) {
   const target = join(outDir, ...parts)
   if (existsSync(target)) {

@@ -1,0 +1,64 @@
+name: Windows build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '24'
+
+jobs:
+  build:
+    name: Build Windows x64 NSIS installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install desktop dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install the official DSH runtime
+        run: npm install --global @deepseek-ai/dsh@latest --no-audit --no-fund
+
+      - name: Build the unsigned NSIS installer
+        run: npm run dist:win
+
+      - name: Verify installer output
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem -Path dist -Filter '*.exe' -File -Recurse)
+          if ($installers.Count -eq 0) {
+            throw 'No Windows installer was produced under dist/'
+          }
+          $installers | ForEach-Object { Write-Host "Found installer: $($_.FullName)" }
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: deepseek-harness-desktop-windows-x64
+          path: dist/**/*.exe
+          if-no-files-found: error
+          retention-days: 14

@@ -12,6 +12,7 @@
     "dist": "npm run bundle:dsh && electron-builder --publish never",
     "dist:dir": "npm run bundle:dsh && electron-builder --dir --publish never",
     "dist:linux": "npm run bundle:dsh && electron-builder --linux deb AppImage --publish never",
+    "dist:win": "npm run bundle:dsh && electron-builder --win nsis --x64 --publish never",
     "dist:mac": "npm run bundle:dsh && electron-builder --mac dmg dir --arm64 --publish never",
     "dist:mac:dir": "npm run bundle:dsh && electron-builder --mac dir --arm64 --publish never"
   },
