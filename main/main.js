@@ -2,12 +2,11 @@
 
 // DeepSeek Harness Desktop — Electron shell for DeepSeek Harness (DSH).
 //
-// The app does not reimplement any harness logic. By default it runs the
-// DSH copy bundled in vendor/dsh on Electron's own embedded Node runtime
-// (ELECTRON_RUN_AS_NODE=1), so a packaged install needs neither Node.js nor
-// a dsh install on the target machine. An explicit DSH_BIN always wins;
-// otherwise it falls back to a machine-installed dsh (nvm / Homebrew /
-// npm-global) and finally to `npx @deepseek-ai/dsh`.
+// The app does not reimplement any harness logic. It first uses DSH_BIN or a
+// machine-installed dsh. When neither exists, it downloads one pinned runtime
+// asset into the app's user-data directory and reuses that verified cache on
+// later launches. Managed runtimes execute on Electron's embedded Node, so a
+// clean machine needs no separate Node/npm installation.
 //
 // Startup: pick a free loopback port -> start dsh web -> poll until the SPA
 // is served -> point a sandboxed BrowserWindow at it. Closing the window
@@ -20,20 +19,30 @@ const net = require('node:net')
 const http = require('node:http')
 const path = require('node:path')
 const fs = require('node:fs')
+const desktopPackage = require('../package.json')
+const { resolveRuntime } = require('./runtime-manager')
+const { hasSameOrigin, isSuccessfulHtmlResponse } = require('./http-safety')
 
 const DSH_HOST = '127.0.0.1'
 const READY_POLL_MS = 250
 const MAX_PORT_ATTEMPTS = 3
 
 let serverProc = null
+let serverFailure = null
 let serverPort = null
 let serverUrl = null
 let mainWindow = null
+let booting = true
 let quitting = false
 let logStream = null
 let logPath = null
 let serverLogTail = []
 let launchLabel = 'dsh'
+let runtimeProgressWindow = null
+let pendingRuntimeProgress = null
+let serverShutdownPromise = null
+let quitCleanupStarted = false
+let quitCleanupComplete = false
 
 // ---------------------------------------------------------------------------
 // Small utilities
@@ -91,115 +100,141 @@ function prependExtraPath () {
   process.env.PATH = `${extras}${path.delimiter}${process.env.PATH || '/usr/bin:/bin'}`
 }
 
-function which (name) {
-  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
-    if (!dir) continue
-    const candidate = path.join(dir, name)
-    try {
-      fs.accessSync(candidate, fs.constants.X_OK)
-      return candidate
-    } catch {
-      // keep looking
-    }
+function startupTimeoutMs () {
+  if (process.env.DSH_STARTUP_TIMEOUT_MS) {
+    const requested = Number(process.env.DSH_STARTUP_TIMEOUT_MS)
+    if (Number.isFinite(requested) && requested > 0) return requested
+    appendLog('ignored invalid DSH_STARTUP_TIMEOUT_MS; expected a positive number\n')
   }
-  return null
+  return 60_000
 }
 
-function expandGlob (pattern) {
-  if (!pattern.includes('*')) return [pattern]
-  const star = pattern.indexOf('*')
-  const prefix = pattern.slice(0, star)
-  const suffix = pattern.slice(star + 1)
-  const base = prefix.slice(0, prefix.lastIndexOf('/') + 1)
-  const namePrefix = prefix.slice(prefix.lastIndexOf('/') + 1)
-  let dir
-  try {
-    dir = fs.readdirSync(base)
-  } catch {
-    return []
-  }
-  return dir
-    .filter((entry) => entry.startsWith(namePrefix))
-    .map((entry) => base + entry + suffix)
-}
-
-function findInstalledDsh () {
-  const candidates = [
-    ...(process.env.NVM_BIN ? [path.join(process.env.NVM_BIN, 'dsh')] : []),
-    path.join(osHome(), '.nvm', 'current', 'bin', 'dsh'),
-    path.join(osHome(), '.nvm', 'versions', 'node', '*', 'bin', 'dsh'),
-    path.join(osHome(), 'Desktop', 'deepseek-harness', 'node_modules', '.bin', 'dsh')
-  ]
-  for (const candidate of candidates) {
-    for (const resolved of expandGlob(candidate)) {
-      try {
-        fs.accessSync(resolved, fs.constants.X_OK)
-        return resolved
-      } catch {
-        // keep looking
-      }
-    }
-  }
-  return which('dsh')
-}
-
-// Path to the bundled dsh entry script, if the bundle is present.
-function bundledDshBin () {
-  const root = app.isPackaged ? process.resourcesPath : app.getAppPath()
-  const bin = path.join(root, 'vendor', 'dsh', 'lib', 'bin.js')
-  try {
-    fs.accessSync(bin, fs.constants.R_OK)
-    return bin
-  } catch {
-    return null
+function launchForPort (runtime, port) {
+  return {
+    ...runtime,
+    args: [
+      ...runtime.prefixArgs,
+      'web',
+      '--host', DSH_HOST,
+      '--port', String(port)
+    ]
   }
 }
 
-// Resolve how to launch the harness, in priority order:
-//   1. DSH_BIN — an explicit external dsh launcher the user pointed at.
-//   2. Bundled vendor/dsh on Electron's embedded Node (zero-dependency mode).
-//   3. A machine-installed `dsh` (nvm / Homebrew / pnpm / npm-global).
-//   4. `npx --yes @deepseek-ai/dsh` (machines without a global install;
-//      slower first start, so it gets a longer startup timeout).
-function resolveDshLaunch (port) {
-  const webArgs = ['web', '--host', DSH_HOST, '--port', String(port)]
-  if (process.env.DSH_BIN) {
+function formatBytes (bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB'
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+function runtimeProgressState (event) {
+  if (event.phase === 'download') {
+    const hasTotal = Number.isFinite(event.totalBytes) && event.totalBytes > 0
+    const percent = hasTotal
+      ? Math.min(100, Math.round((event.downloadedBytes / event.totalBytes) * 100))
+      : null
     return {
-      command: process.env.DSH_BIN,
-      args: webArgs,
-      label: `external DSH_BIN (${process.env.DSH_BIN})`,
-      viaNpx: false
+      title: '正在准备 DeepSeek Harness',
+      message: '首次启动需下载运行时，后续启动会直接复用。',
+      detail: hasTotal
+        ? `${formatBytes(event.downloadedBytes)} / ${formatBytes(event.totalBytes)}`
+        : `已下载 ${formatBytes(event.downloadedBytes)}`,
+      percent
     }
   }
-  const bundledBin = bundledDshBin()
-  if (bundledBin) {
+  if (event.phase === 'verify') {
     return {
-      command: process.execPath,
-      args: ['--expose-internals', bundledBin, ...webArgs],
-      env: { ELECTRON_RUN_AS_NODE: '1' },
-      label: `bundled dsh on Electron's embedded Node ${process.versions.node}`,
-      viaNpx: false
+      title: '正在验证下载内容',
+      message: '正在校验运行时完整性。',
+      detail: event.label || '',
+      percent: 100
     }
   }
-  const installed = findInstalledDsh()
-  if (installed) {
-    return { command: installed, args: webArgs, label: installed, viaNpx: false }
+  return {
+    title: '正在安装 DeepSeek Harness',
+    message: '正在解压到用户缓存，无需管理员权限。',
+    detail: event.label || '',
+    percent: null
   }
-  const npx = which('npx')
-  if (npx) {
-    return {
-      command: npx,
-      args: ['--yes', '@deepseek-ai/dsh', ...webArgs],
-      label: 'npx @deepseek-ai/dsh',
-      viaNpx: true
-    }
-  }
-  return { command: 'dsh', args: webArgs, label: 'dsh', viaNpx: false }
 }
 
-function startupTimeoutMs (viaNpx) {
-  if (process.env.DSH_STARTUP_TIMEOUT_MS) return Number(process.env.DSH_STARTUP_TIMEOUT_MS)
-  return viaNpx ? 180_000 : 60_000
+function renderRuntimeProgress () {
+  if (!runtimeProgressWindow || runtimeProgressWindow.isDestroyed() || !pendingRuntimeProgress) return
+  const state = runtimeProgressState(pendingRuntimeProgress)
+  runtimeProgressWindow.webContents
+    .executeJavaScript(`window.setRuntimeProgress(${JSON.stringify(state)})`)
+    .catch(() => {})
+  runtimeProgressWindow.setProgressBar(state.percent === null ? 2 : state.percent / 100)
+}
+
+function createRuntimeProgressWindow () {
+  if (runtimeProgressWindow) return
+  runtimeProgressWindow = new BrowserWindow({
+    width: 520,
+    height: 230,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    closable: false,
+    show: false,
+    title: '准备 DeepSeek Harness',
+    backgroundColor: '#0F1115',
+    icon: path.join(__dirname, '..', 'assets', 'icon.png'),
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  })
+  runtimeProgressWindow.on('closed', () => {
+    runtimeProgressWindow = null
+  })
+  runtimeProgressWindow.once('ready-to-show', () => runtimeProgressWindow.show())
+  runtimeProgressWindow.webContents.on('did-finish-load', renderRuntimeProgress)
+  const html = `<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>准备 DeepSeek Harness</title>
+<style>
+  :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0f1115; color: #f4f6f8; }
+  body { margin: 0; padding: 30px 34px; }
+  h1 { margin: 0 0 10px; font-size: 20px; font-weight: 650; }
+  p { margin: 0 0 20px; color: #aeb6c2; font-size: 14px; line-height: 1.5; }
+  progress { width: 100%; height: 10px; accent-color: #6f8cff; }
+  #detail { margin-top: 9px; color: #778292; font-size: 12px; }
+</style>
+<h1 id="title">正在准备 DeepSeek Harness</h1>
+<p id="message">首次启动需下载运行时。</p>
+<progress id="progress"></progress>
+<div id="detail"></div>
+<script>
+  window.setRuntimeProgress = ({ title, message, detail, percent }) => {
+    document.getElementById('title').textContent = title
+    document.getElementById('message').textContent = message
+    document.getElementById('detail').textContent = detail
+    const progress = document.getElementById('progress')
+    if (percent === null) progress.removeAttribute('value')
+    else progress.value = percent
+  }
+</script>`
+  runtimeProgressWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+}
+
+function updateRuntimeProgress (event) {
+  if (event.phase === 'ready') {
+    closeRuntimeProgressWindow()
+    return
+  }
+  pendingRuntimeProgress = event
+  createRuntimeProgressWindow()
+  renderRuntimeProgress()
+}
+
+function closeRuntimeProgressWindow () {
+  pendingRuntimeProgress = null
+  if (runtimeProgressWindow && !runtimeProgressWindow.isDestroyed()) {
+    runtimeProgressWindow.destroy()
+  }
+  runtimeProgressWindow = null
 }
 
 // ---------------------------------------------------------------------------
@@ -207,28 +242,35 @@ function startupTimeoutMs (viaNpx) {
 // ---------------------------------------------------------------------------
 
 function startDshServer (launch) {
+  serverFailure = null
   const env = { ...process.env, ...(launch.env || {}) }
   if (!launch.env || !launch.env.ELECTRON_RUN_AS_NODE) {
-    // bundled mode needs this flag; every other mode must not inherit it
+    // Only the managed runtime uses Electron as Node. Never leak this flag to
+    // an explicitly configured or machine-installed dsh launcher.
     delete env.ELECTRON_RUN_AS_NODE
   }
 
-  serverProc = spawn(launch.command, launch.args, {
+  const proc = spawn(launch.command, launch.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
     detached: process.platform !== 'win32'
   })
+  serverProc = proc
 
-  serverProc.stdout.on('data', appendLog)
-  serverProc.stderr.on('data', appendLog)
+  proc.stdout.on('data', appendLog)
+  proc.stderr.on('data', appendLog)
 
-  serverProc.on('error', (err) => {
+  proc.on('error', (err) => {
     appendLog(`spawn error: ${err.message}\n`)
+    if (serverProc !== proc) return
+    serverFailure = err
     serverProc = null
   })
 
-  serverProc.on('exit', (code, signal) => {
+  proc.on('exit', (code, signal) => {
     appendLog(`dsh exited (code=${code}, signal=${signal})\n`)
+    if (serverProc !== proc) return
+    serverFailure = new Error(`dsh exited during startup (code=${code}, signal=${signal})`)
     serverProc = null
     if (!quitting && mainWindow) {
       mainWindow.destroy()
@@ -243,52 +285,100 @@ function startDshServer (launch) {
 }
 
 function shutdownServer () {
-  if (!serverProc) return
+  if (serverShutdownPromise) return serverShutdownPromise
+  if (!serverProc) return Promise.resolve()
   const proc = serverProc
   serverProc = null
-  try {
-    if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGTERM')
-    else proc.kill('SIGTERM')
-  } catch {
-    try { proc.kill('SIGTERM') } catch { /* already gone */ }
-  }
-  const killer = setTimeout(() => {
-    try {
-      if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL')
-      else proc.kill('SIGKILL')
-    } catch {
-      // already gone
+
+  serverShutdownPromise = new Promise((resolveShutdown) => {
+    let settled = false
+    let killer = null
+    let forcedFinish = null
+    const finish = () => {
+      if (settled) return
+      settled = true
+      if (killer) clearTimeout(killer)
+      if (forcedFinish) clearTimeout(forcedFinish)
+      serverShutdownPromise = null
+      resolveShutdown()
     }
-  }, 3000)
-  killer.unref()
+    proc.once('exit', finish)
+
+    try {
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        finish()
+      } else if (proc.pid && process.platform !== 'win32') {
+        process.kill(-proc.pid, 'SIGTERM')
+      } else {
+        proc.kill('SIGTERM')
+      }
+    } catch {
+      try { proc.kill('SIGTERM') } catch { finish() }
+    }
+
+    if (!settled) {
+      killer = setTimeout(() => {
+        try {
+          if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL')
+          else proc.kill('SIGKILL')
+        } catch {
+          finish()
+          return
+        }
+        forcedFinish = setTimeout(finish, 1000)
+        forcedFinish.unref()
+      }, 3000)
+      killer.unref()
+    }
+  })
+  return serverShutdownPromise
 }
 
 function waitForServer (url, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   return new Promise((resolve, reject) => {
+    let settled = false
+    let retryTimer = null
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      if (error) reject(error)
+      else resolve()
+    }
     const attempt = () => {
+      if (settled) return
+      let requestFinished = false
+      const completeRequest = (callback) => {
+        if (requestFinished || settled) return
+        requestFinished = true
+        callback()
+      }
       const req = http.get(url, (res) => {
         res.resume()
-        if (res.statusCode >= 200 && res.statusCode < 500) {
-          resolve()
-        } else {
-          retry()
-        }
+        completeRequest(() => {
+          if (isSuccessfulHtmlResponse(res.statusCode, res.headers['content-type'])) finish()
+          else retry()
+        })
       })
-      req.on('error', retry)
+      req.on('error', () => completeRequest(retry))
       req.setTimeout(2000, () => {
-        req.destroy()
-        retry()
+        completeRequest(() => {
+          req.destroy()
+          retry()
+        })
       })
     }
     const retry = () => {
+      if (settled) return
+      if (serverFailure) return finish(serverFailure)
       if (serverProc && serverProc.exitCode !== null) {
-        return reject(new Error(`dsh exited during startup (code ${serverProc.exitCode})`))
+        return finish(new Error(`dsh exited during startup (code ${serverProc.exitCode})`))
       }
       if (Date.now() > deadline) {
-        return reject(new Error(`timed out after ${timeoutMs} ms waiting for the dsh server`))
+        return finish(new Error(`timed out after ${timeoutMs} ms waiting for the dsh server`))
       }
-      setTimeout(attempt, READY_POLL_MS)
+      retryTimer = setTimeout(attempt, READY_POLL_MS)
     }
     attempt()
   })
@@ -325,10 +415,9 @@ function createMainWindow () {
     return { action: 'deny' }
   })
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith(serverUrl) && /^https?:/i.test(url)) {
-      event.preventDefault()
-      shell.openExternal(url)
-    }
+    if (hasSameOrigin(url, serverUrl)) return
+    event.preventDefault()
+    if (/^https?:/i.test(url)) void shell.openExternal(url)
   })
 
   mainWindow.on('closed', () => {
@@ -430,13 +519,40 @@ async function boot () {
   prependExtraPath()
   ensureLogStream()
 
+  let runtime
+  try {
+    runtime = await resolveRuntime({
+      userDataDir: app.getPath('userData'),
+      desktopVersion: app.getVersion(),
+      runtimeVersion: desktopPackage.deepseekHarness.runtimeVersion,
+      electronAbi: process.versions.modules,
+      execPath: process.execPath,
+      env: process.env,
+      platform: process.platform,
+      arch: process.arch,
+      onProgress: updateRuntimeProgress
+    })
+    closeRuntimeProgressWindow()
+    appendLog(`runtime selected: ${runtime.label} (${runtime.source})\n`)
+  } catch (err) {
+    closeRuntimeProgressWindow()
+    dialog.showErrorBox(
+      'DeepSeek Harness runtime could not be prepared',
+      `${err.message}\n\n` +
+        'Check your network connection, install @deepseek-ai/dsh locally, or set DSH_BIN.\n\n' +
+        `Desktop log: ${logPath}`
+    )
+    app.quit()
+    return
+  }
+
   let lastError = null
   for (let attempt = 1; attempt <= MAX_PORT_ATTEMPTS; attempt++) {
     serverPort = await findFreePort()
     serverUrl = `http://${DSH_HOST}:${serverPort}`
-    const launch = resolveDshLaunch(serverPort)
+    const launch = launchForPort(runtime, serverPort)
     launchLabel = launch.label
-    const timeoutMs = startupTimeoutMs(launch.viaNpx)
+    const timeoutMs = startupTimeoutMs()
     appendLog(`--- boot attempt ${attempt}: ${launch.label} on ${serverUrl} ---\n`)
     startDshServer(launch)
     try {
@@ -446,7 +562,7 @@ async function boot () {
     } catch (err) {
       lastError = err
       appendLog(`attempt ${attempt} failed: ${err.message}\n`)
-      shutdownServer()
+      await shutdownServer()
     }
   }
 
@@ -455,8 +571,8 @@ async function boot () {
       'DeepSeek Harness failed to start',
       `${lastError.message}\n\n` +
         `Command tried: ${launchLabel}\n` +
-        `Tip: set DSH_BIN to a dsh launcher, reinstall the app so vendor/dsh is present,\n` +
-        `or install the harness with \`npm i -g @deepseek-ai/dsh\`.\n` +
+        `Tip: set DSH_BIN to a dsh launcher or install the harness with\n` +
+        `\`npm i -g @deepseek-ai/dsh\`.\n` +
         `On macOS, Homebrew Node is detected from /opt/homebrew/bin.\n\n` +
         `Server log: ${logPath}\n${serverLogTail.join('')}`
     )
@@ -466,6 +582,7 @@ async function boot () {
 
   appendLog(`dsh ready on ${serverUrl}\n`)
   createMainWindow()
+  booting = false
   startUpdateCheck()
 }
 
@@ -495,17 +612,26 @@ if (!gotLock) {
   })
 
   app.on('activate', () => {
-    if (mainWindow === null && !quitting && serverUrl) createMainWindow()
+    if (mainWindow === null && !booting && !quitting && serverUrl) createMainWindow()
   })
 
   app.on('window-all-closed', () => {
+    if (booting) return
     quitting = true
-    shutdownServer()
     app.quit()
   })
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     quitting = true
-    shutdownServer()
+    if (quitCleanupComplete) return
+    event.preventDefault()
+    if (quitCleanupStarted) return
+    quitCleanupStarted = true
+    void shutdownServer()
+      .catch((err) => appendLog(`server shutdown failed: ${err.message}\n`))
+      .finally(() => {
+        quitCleanupComplete = true
+        app.quit()
+      })
   })
 }

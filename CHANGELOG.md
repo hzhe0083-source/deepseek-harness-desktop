@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 — 瘦安装包（待发布）
+
+- Desktop 安装包不再携带完整 DSH，显著缩小 Desktop 下载体积；DSH 改为独立 Release 运行时资产
+- 运行时解析顺序改为 `DSH_BIN` → 本机 `dsh` → 已校验缓存 → 首次下载固定的 `@deepseek-ai/dsh@0.1.0-rc.6`
+- 首次下载校验 SHA-256 并按版本、平台和架构缓存；缓存命中后无需联网，终端用户仍无需 Node.js / npm
+- 新增 Linux x64 一键安装脚本，从 GitHub Releases 下载并校验 AppImage；仍保留 AppImage、deb 与 macOS arm64 DMG 直接下载
+- 新增 Linux x64、Linux arm64、macOS arm64 的原生运行时资产构建流程；每个 `.tar.gz` 同时发布 `.sha256`
+- Linux 与 macOS 统一使用新版启动器安全区图标，并改用 macOS 15 arm64 runner 构建 DMG 与运行时
+- 收紧本地 Web UI 的同源导航与 HTML 就绪检查，避免相似 URL 绕过和错误响应被误判为启动成功
+
 ## 0.4.0 — 自动更新
 
 - 集成 **electron-updater**，更新源为 GitHub Releases（公开仓库，用户端无需凭据）
