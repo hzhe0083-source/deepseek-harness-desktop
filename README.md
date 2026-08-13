@@ -6,47 +6,19 @@ DeepSeek Harness 的 Electron 桌面端。当前源码版本为 **0.5.0**：Desk
 
 ## 下载与安装
 
-### Linux x64：一条命令安装
-
-```sh
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/hzhe0083-source/deepseek-harness-desktop/main/install.sh | sh
-```
-
-该命令从 [GitHub Releases 最新正式版](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases/latest) 下载 AppImage、校验 Release 中的 SHA-512、安装到用户目录并启动，同时写入 Ubuntu 应用菜单入口和图标。无需 `sudo`；再次执行同一命令即可更新或补装应用图标。
-
-也可以在 [GitHub Releases](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases) 直接下载：
-
-- `DeepSeek-Harness-Desktop-<版本>-linux-x86_64.AppImage`：加执行权限后直接运行；支持应用内自动更新。单独下载 AppImage 不会出现在 Ubuntu 应用列表里，需要应用图标时请改用上面的 `install.sh`。Ubuntu 22.04+ 若未安装 `libfuse2`，请不要双击 AppImage，用 `install.sh` 生成的应用图标启动（脚本会自动解包）。
-- `DeepSeek-Harness-Desktop-<版本>-linux-amd64.deb`：用 `sudo apt install ./文件名.deb` 安装；deb 版本需要手动下载更新。
-
-### macOS arm64（Apple Silicon）
-
-0.5.0 Release 发布后，从 [GitHub Releases](https://github.com/hzhe0083-source/deepseek-harness-desktop/releases) 下载 `DeepSeek-Harness-Desktop-0.5.0-mac-arm64.dmg`，打开后把应用拖进“应用程序”。
-
-**当前必须等 0.5.0 Release 中出现这个 DMG 资产，才有正式的 0.5.0 macOS 下载包。** 如果 Release 页面还没有它，可以按下方“源码开发与构建”自行构建；Intel Mac 暂无正式安装包。
-
-### npm / npx：一条命令启动（可选）
-
-机器上有 Node.js 18+ 的话，也可以不手动下载安装包：
+需要 [Node.js 18+](https://nodejs.org/)。在终端运行：
 
 ```sh
 npx deepseek-harness-desktop
 ```
 
-自动下载并启动最新版，三平台无感：
+会下载并启动最新桌面版，同时写入系统应用图标，之后可以从应用列表打开：
 
 - macOS：挂载 dmg 并启动（加 `--install` 装进「应用程序」）
-- Linux：下载 AppImage、写入 Ubuntu 应用菜单图标，并启动；缺 FUSE2 时自动解包，不必再双击 AppImage
-- Windows：直接运行 portable 版（免安装）
+- Linux：下载 AppImage、写入 Ubuntu 应用菜单图标并启动；没有 `libfuse2` 时自动解包
+- Windows：运行 portable 版（免安装）
 
-npm 包本身只有几 KB，真正的安装包仍从 GitHub Releases 下载并缓存到本地。
-
-### 不能用 pip 安装 Desktop
-
-DeepSeek Harness Desktop 是 Electron 应用，**不提供 pip 包**。`pip install deepseek-harness-sdk` 安装的是供 Python 程序调用的 SDK，不是 Desktop，也不会安装桌面界面。
-
-普通用户只需下载 AppImage、deb 或 DMG；不需要安装 Python、Node.js 或 npm。
+npm 包只有几 KB，真正的安装包从 GitHub Releases 下载并缓存到本地。再次执行同一命令即可检查更新。
 
 ## 瘦安装包如何工作
 
