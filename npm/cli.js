@@ -3,7 +3,7 @@
 //
 // 工作方式：
 //   1. 查询 GitHub Releases 最新版本
-//   2. 按当前平台选择安装包（macOS: zip；Linux: AppImage / deb；Windows: exe）
+//   2. 按当前平台选择安装包（macOS: zip / dmg；Linux: AppImage / deb；Windows: exe）
 //   3. 下载到本地缓存（已是最新则直接复用）
 //   4. 启动桌面应用
 //
@@ -197,6 +197,29 @@ function findAppBundle (dir) {
   return null
 }
 
+function installFromDmg (dmgPath, releaseTag) {
+  const mountPoint = join(cacheDir(), 'mount')
+  rmSync(mountPoint, { recursive: true, force: true })
+  mkdirSync(mountPoint, { recursive: true })
+  console.log('挂载 dmg …')
+  const attach = spawnSync('hdiutil', ['attach', dmgPath, '-nobrowse', '-readonly', '-mountpoint', mountPoint], { stdio: 'ignore' })
+  if (attach.status !== 0) fail('挂载 dmg 失败。请到 GitHub Releases 手动下载安装。')
+  try {
+    const app = findAppBundle(mountPoint)
+    if (!app) fail('dmg 中没有找到 .app。请到 GitHub Releases 手动下载安装。')
+    const targetDir = join(cacheDir(), `app-${releaseTag}`)
+    rmSync(targetDir, { recursive: true, force: true })
+    mkdirSync(targetDir, { recursive: true })
+    const target = join(targetDir, basename(app))
+    console.log('从 dmg 复制应用…')
+    const copy = spawnSync('ditto', [app, target], { stdio: 'ignore' })
+    if (copy.status !== 0) fail('从 dmg 复制应用失败。请到 GitHub Releases 手动下载安装。')
+    return target
+  } finally {
+    spawnSync('hdiutil', ['detach', mountPoint], { stdio: 'ignore' })
+  }
+}
+
 function launchLinux (file) {
   try {
     chmodSync(file, 0o755)
@@ -284,9 +307,14 @@ async function main () {
   }
 
   if (PLATFORM === 'darwin') {
-    const versionDir = extractMacZip(file, release.tag_name)
-    const app = findAppBundle(versionDir)
-    if (!app) fail(`解压后没找到 .app（${versionDir}）。请到 GitHub Releases 下载 dmg 手动安装。`)
+    let app
+    if (asset.name.endsWith('.dmg')) {
+      app = installFromDmg(file, release.tag_name)
+    } else {
+      const versionDir = extractMacZip(file, release.tag_name)
+      app = findAppBundle(versionDir)
+      if (!app) fail(`解压后没找到 .app（${versionDir}）。请到 GitHub Releases 下载 dmg 手动安装。`)
+    }
     launchMacApp(app)
   } else if (PLATFORM === 'linux') {
     if (process.argv.includes('--deb')) {
