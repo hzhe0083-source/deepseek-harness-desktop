@@ -22,6 +22,7 @@ const fs = require('node:fs')
 const desktopPackage = require('../package.json')
 const { resolveRuntime } = require('./runtime-manager')
 const { hasSameOrigin, isSuccessfulHtmlResponse } = require('./http-safety')
+const { buildWindowsCommand } = require('./win-command')
 
 // GNOME/Ubuntu match the running window to the .desktop file via WM_CLASS.
 // Keep this aligned with package.json desktopName and linux.desktop.entry.StartupWMClass.
@@ -276,12 +277,15 @@ function startDshServer (launch) {
     delete env.ELECTRON_RUN_AS_NODE
   }
 
-  const winCmd = process.platform === 'win32' && /\.(cmd|bat)$/i.test(launch.command)
-  const proc = spawn(launch.command, launch.args, {
+  // .cmd/.bat launchers need cmd.exe; build a quoted line ourselves because
+  // `shell: true` wraps the whole line in one quote pair and cmd.exe's /s
+  // rule then strips quotes off paths that contain spaces.
+  const winLaunch = buildWindowsCommand(launch.command, launch.args)
+  const proc = spawn(winLaunch.command, winLaunch.args, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env,
     detached: process.platform !== 'win32',
-    shell: winCmd,
+    windowsVerbatimArguments: winLaunch.windowsVerbatimArguments,
     windowsHide: true
   })
   serverProc = proc
