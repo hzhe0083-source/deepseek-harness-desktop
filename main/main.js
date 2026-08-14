@@ -22,6 +22,7 @@ const fs = require('node:fs')
 const desktopPackage = require('../package.json')
 const { resolveRuntime } = require('./runtime-manager')
 const { hasSameOrigin, isSuccessfulHtmlResponse } = require('./http-safety')
+const { terminateProcessTree } = require('./win-process')
 
 // GNOME/Ubuntu match the running window to the .desktop file via WM_CLASS.
 // Keep this aligned with package.json desktopName and linux.desktop.entry.StartupWMClass.
@@ -336,7 +337,14 @@ function shutdownServer () {
     try {
       if (proc.exitCode !== null || proc.signalCode !== null) {
         finish()
-      } else if (proc.pid && process.platform !== 'win32') {
+      } else if (process.platform === 'win32') {
+        // Kill the whole tree: the direct child may only be a cmd.exe shim,
+        // and its node.exe server would survive a plain proc.kill().
+        if (!terminateProcessTree(proc.pid)) {
+          appendLog('[shutdown] taskkill failed; falling back to killing the direct child\n')
+        }
+        try { proc.kill('SIGKILL') } catch { /* taskkill already removed it */ }
+      } else if (proc.pid) {
         process.kill(-proc.pid, 'SIGTERM')
       } else {
         proc.kill('SIGTERM')
@@ -348,8 +356,16 @@ function shutdownServer () {
     if (!settled) {
       killer = setTimeout(() => {
         try {
-          if (proc.pid && process.platform !== 'win32') process.kill(-proc.pid, 'SIGKILL')
-          else proc.kill('SIGKILL')
+          if (process.platform === 'win32') {
+            if (!terminateProcessTree(proc.pid)) {
+              appendLog('[shutdown] taskkill failed on escalation; killing the direct child\n')
+            }
+            proc.kill('SIGKILL')
+          } else if (proc.pid) {
+            process.kill(-proc.pid, 'SIGKILL')
+          } else {
+            proc.kill('SIGKILL')
+          }
         } catch {
           finish()
           return
